@@ -1,0 +1,8 @@
+# On ignore le gros dossier de l'environnement virtuel
+venv/
+
+# On ignore les fichiers cache
+__pycache__/
+
+# On ignore les audios temporaires
+*.webm
