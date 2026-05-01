@@ -1,3 +1,12 @@
 Flask==3.0.3
-Flask-Cors==4.0.0
+Flask-Cors>=4.0.1          # Version modifiée pour satisfaire deepface
 openai-whisper==20250625
+
+# Reconnaissance faciale - deepface gère ses propres dépendances
+opencv-python==4.13.0.92
+numpy==2.4.4
+deepface==0.0.99
+pillow==12.2.0
+
+# Communication
+requests==2.33.1
