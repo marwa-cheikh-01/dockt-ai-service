@@ -38,15 +38,6 @@ URL_JAVA_AVEC_BIOMETRIE = "http://localhost:8082/api/patients/avec-biometrie"
 URL_SPRING_RDV       = "http://localhost:8081/api/rdv/patient"
 URL_SPRING_CHECKIN   = "http://localhost:8081/api/file-attente/checkin"
 
-# Token JWT pour Spring Boot (port 8081)
-JWT_TOKEN = "eyJhbGciOiJIUzM4NCJ9.eyJyb2xlIjoiU0VDUkVUQUlSRSIsInN1YiI6InNlY0BnbWFpbC5jb20iLCJpYXQiOjE3NzczNzk3MDcsImV4cCI6MTc3NzM4MDYwN30.wIAUZ2rbKQwKL3rhqkM8qkhdMMGc_h9wEm3FO_P0YSHf2bPzM2RVd87lgCNRNGRG"
-
-# Headers pour Spring Boot
-HEADERS_SPRING = {
-    "Authorization": JWT_TOKEN,
-    "Content-Type": "application/json"
-}
-
 
 # ============================================
 # FONCTIONS UTILITAIRES
@@ -101,7 +92,7 @@ def get_rdv_du_jour(patient_id):
         url = f"{URL_SPRING_RDV}/{patient_id}"
         print(f"\n📡 [get_rdv_du_jour] Appel: {url}")
         
-        response = requests.get(url, headers=HEADERS_SPRING, timeout=10)
+
         print(f"📡 [get_rdv_du_jour] Status: {response.status_code}")
         
         if response.status_code == 200:
@@ -141,7 +132,6 @@ def faire_checkin_spring(rdv_id):
         url = f"{URL_SPRING_CHECKIN}/{rdv_id}"
         print(f"📡 [faire_checkin_spring] Appel: PUT {url}")
         
-        response = requests.put(url, headers=HEADERS_SPRING, timeout=10)
         print(f"📡 [faire_checkin_spring] Status: {response.status_code}")
         
         if response.status_code == 200:
@@ -433,21 +423,35 @@ def capture_et_associer():
         print(f"📊 CAPTURE ET ASSOCIER - NOUVEAU PATIENT")
         print(f"{'='*50}")
         print(f"👤 Patient ID reçu: {patient_id}")
+        print(f"📐 Vecteur reçu: {type(vecteur)}")
         
         if vecteur is None:
             print("❌ ERREUR: vecteur est NULL!")
             return jsonify({"status": "error", "message": "vecteur null"}), 400
         
-        if not patient_id or not vecteur:
-            return jsonify({"status": "error",
-                            "message": "patient_id et vecteur requis"}), 400
+        if isinstance(vecteur, list):
+            print(f"   Dimensions: {len(vecteur)}")
+            print(f"   Premieres valeurs: {vecteur[:3]}")
+        elif isinstance(vecteur, np.ndarray):
+            print(f"   Type numpy: {vecteur.dtype}")
+            print(f"   Dimensions: {vecteur.shape}")
         
+        if not patient_id or not vecteur:
+            return jsonify({"status": "error", "message": "patient_id et vecteur requis"}), 400
+        
+        # Conversion en bytes
         if isinstance(vecteur, np.ndarray):
             vecteur = vecteur.tolist()
         
         vecteur_bytes = np.array(vecteur, dtype=np.float64).tobytes()
+        print(f"   Taille en bytes: {len(vecteur_bytes)}")
+        
+        if len(vecteur_bytes) == 0:
+            print("❌ ERREUR: vecteur_bytes est vide!")
+            return jsonify({"status": "error", "message": "vecteur vide"}), 400
         
         url = f"{URL_JAVA_BIOMETRIE}/{patient_id}/biometrie"
+        print(f"   URL: {url}")
         
         response = requests.put(
             url,
@@ -459,15 +463,15 @@ def capture_et_associer():
         print(f"   Reponse Java: HTTP {response.status_code}")
         if response.status_code == 200:
             print(f"✅ Biométrie enregistrée pour patient {patient_id}")
-            return jsonify({"status": "success",
-                            "message": "Biométrie enregistrée"})
+            return jsonify({"status": "success", "message": "Biométrie enregistrée"})
         else:
-            print(f"⚠️ Erreur biométrie Java → HTTP {response.status_code}")
-            return jsonify({"status": "error",
-                            "message": f"Erreur Java: {response.status_code}"}), 500
+            print(f"⚠️ Erreur: {response.text[:200]}")
+            return jsonify({"status": "error", "message": f"HTTP {response.status_code}"}), 500
             
     except Exception as e:
-        print(f"❌ ERREUR capture_et_associer: {e}")
+        print(f"❌ ERREUR: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
