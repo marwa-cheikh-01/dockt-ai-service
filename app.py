@@ -16,8 +16,9 @@ CORS(app)
 # ============================================
 # 1. CHARGEMENT WHISPER
 # ============================================
-print("⏳ Chargement du modèle Whisper 'tiny'...")
-model = whisper.load_model("tiny")
+# MERGE : modèle "small" retenu (décision finale)
+print("⏳ Chargement du modèle Whisper 'small'...")
+model = whisper.load_model("small")
 print("✅ Modèle chargé !")
 
 # ============================================
@@ -31,7 +32,7 @@ dernier_patient_reconnu = {
     "nom": None, "prenom": None, "timestamp": 0
 }
 
-# Dictionnaire partagé avec tablette2_consultation.py
+# MERGE : dict consultation_en_cours vient de toi (absent chez collègue)
 # { patient_id: { rdv_id, debut, nom, prenom } }
 consultation_en_cours = {}
 
@@ -42,11 +43,13 @@ URL_JAVA_RECONNAITRE            = "http://localhost:8082/api/patients/reconnaitr
 URL_JAVA_BIOMETRIE              = "http://localhost:8082/api/patients"
 URL_SPRING_RDV                  = "http://localhost:8081/api/rdv/patient"
 URL_SPRING_CHECKIN              = "http://localhost:8081/api/file-attente/checkin"
+# MERGE : URL statut consultation vient de toi (absent chez collègue)
 URL_SPRING_STATUT_CONSULTATION  = "http://localhost:8081/api/file-attente/statut-consultation"
 
 # ============================================
 # 4. HEADERS SPRING — API ouverte
 # ============================================
+# MERGE : HEADERS_SPRING vient de toi — appliqué à tous les appels Spring
 HEADERS_SPRING = {}
 
 # ============================================
@@ -89,6 +92,7 @@ def appeler_java_reconnaitre(vecteur):
     """
     Envoie le vecteur (bytes float64) au MS1 Java sur /reconnaitre.
     Retourne dict patient ou None.
+    MERGE : gestion explicite du 404 (patient non reconnu) vient de la collègue.
     """
     try:
         vecteur_bytes = np.array(vecteur, dtype=np.float64).tobytes()
@@ -100,8 +104,12 @@ def appeler_java_reconnaitre(vecteur):
         )
         if response.status_code == 200:
             return response.json()
-        print(f"⚠️ Java reconnaitre → HTTP {response.status_code}")
-        return None
+        elif response.status_code == 404:
+            # Patient non reconnu — ce n'est pas une erreur
+            return None
+        else:
+            print(f"⚠️ Java reconnaitre → HTTP {response.status_code}")
+            return None
     except Exception as e:
         print(f"❌ Erreur Java reconnaissance: {e}")
         return None
@@ -111,6 +119,7 @@ def get_rdv_du_jour(patient_id):
     """
     Retourne le rdv_id du RDV d'aujourd'hui pour ce patient.
     Retourne None si aucun.
+    MERGE : HEADERS_SPRING ajouté (toi) + log 403 ajouté (collègue).
     """
     try:
         url = f"{URL_SPRING_RDV}/{patient_id}"
@@ -137,6 +146,9 @@ def get_rdv_du_jour(patient_id):
                         return rdv_id
 
             print("   ⚠️ Aucun RDV aujourd'hui")
+
+        elif response.status_code == 403:
+            print("   ❌ ERREUR 403: Token JWT invalide ou expiré !")
         else:
             print(f"   ❌ Erreur HTTP {response.status_code}")
         return None
@@ -146,23 +158,48 @@ def get_rdv_du_jour(patient_id):
         return None
 
 
+# MERGE : version collègue avec tuple (succes, raison) pour gérer "already_checkin"
+# HEADERS_SPRING ajouté depuis toi
 def faire_checkin_spring(rdv_id):
-    """Check-in Spring Boot MS2 (tablette 1)."""
+    """
+    Check-in Spring Boot MS2 (tablette 1).
+    Retourne (True, 'success') | (False, 'already_checkin') | (False, 'error')
+    """
     try:
         url = f"{URL_SPRING_CHECKIN}/{rdv_id}"
         print(f"📡 [faire_checkin_spring] PUT {url}")
         response = requests.put(url, headers=HEADERS_SPRING, timeout=10)
         print(f"📡 [faire_checkin_spring] Status: {response.status_code}")
+
         if response.status_code == 200:
             print(f"✅ CHECK-IN OK (RDV {rdv_id})")
-            return True
+            return True, "success"
+
+        if response.status_code == 403:
+            print("   ❌ ERREUR 403: Token JWT invalide ou expiré !")
+            return False, "error"
+
+        # Détecter le double check-in (Spring renvoie 500 + message)
+        if response.status_code == 500:
+            try:
+                error_body = response.text
+                print(f"   ⚠️ Body erreur: {error_body[:200]}")
+                if "déjà effectué" in error_body or "already" in error_body.lower():
+                    print("   ⚠️ Check-in déjà effectué pour ce patient !")
+                    return False, "already_checkin"
+            except Exception:
+                pass
+            return False, "error"
+
         print(f"⚠️ Erreur check-in → HTTP {response.status_code}")
-        return False
+        return False, "error"
+
     except Exception as e:
         print(f"❌ [faire_checkin_spring] Exception: {e}")
-        return False
+        return False, "error"
 
 
+# MERGE : update_statut_consultation vient de toi (absent chez collègue)
 def update_statut_consultation(rdv_id, statut):
     """
     Met à jour le statut de consultation dans MS2.
@@ -190,6 +227,7 @@ def update_statut_consultation(rdv_id, statut):
         return False
 
 
+# MERGE : get_vecteur_depuis_bd vient de toi (absent chez collègue)
 def get_vecteur_depuis_bd(patient_id):
     """
     Récupère imageBiometrique (bytea) du patient depuis MS1.
@@ -224,6 +262,7 @@ def get_vecteur_depuis_bd(patient_id):
         return None
 
 
+# MERGE : calculer_similarite_cosinus vient de toi (absent chez collègue)
 def calculer_similarite_cosinus(v1, v2):
     """
     Similarité cosinus entre deux vecteurs numpy.
@@ -354,16 +393,21 @@ def reconnaitre_visage():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+# MERGE : gestion des 3 cas (success / already_checkin / error) vient de la collègue
+# tuple faire_checkin_spring + HEADERS_SPRING intégrés
 @app.route('/api/visage/checkin', methods=['POST'])
 def checkin():
     global dernier_patient_reconnu
     try:
-        print("\n" + "="*50)
+        print("\n" + "=" * 50)
         print("✅ CHECK-IN TABLETTE 1")
-        print("="*50)
+        print("=" * 50)
 
         data = request.get_json()
+        print(f"📥 Données reçues: {data}")
+
         if not data or 'patient_id' not in data:
+            print("❌ patient_id manquant")
             return jsonify({"status": "error", "message": "patient_id requis"}), 400
 
         patient_id = data['patient_id']
@@ -371,16 +415,24 @@ def checkin():
         prenom = data.get('prenom', '')
         print(f"👤 Patient: {prenom} {nom} (ID: {patient_id})")
 
+        print("🔍 Étape 1: Recherche du RDV du jour...")
         rdv_id = get_rdv_du_jour(patient_id)
+
         if not rdv_id:
+            print("⚠️ Aucun RDV trouvé pour aujourd'hui")
             return jsonify({
-                "status": "no_rdv", "message": "Aucun RDV aujourd'hui",
+                "status": "no_rdv",
+                "message": "Aucun RDV aujourd'hui",
                 "patient_id": patient_id
             }), 200
 
-        succes = faire_checkin_spring(rdv_id)
+        print(f"✅ RDV trouvé: {rdv_id}")
+
+        print("🔍 Étape 2: Appel Spring Boot check-in...")
+        succes, raison = faire_checkin_spring(rdv_id)
+
         dernier_patient_reconnu = {
-            "status":     "reconnu" if succes else "checkin_failed",
+            "status":     "reconnu" if succes else raison,
             "patient_id": patient_id,
             "nom":        nom,
             "prenom":     prenom,
@@ -388,15 +440,36 @@ def checkin():
             "timestamp":  time.time()
         }
 
+        # CAS 1 : Check-in réussi
         if succes:
+            print("✅ CHECK-IN RÉUSSI")
             return jsonify({
-                "status": "success", "message": "Check-in effectué !",
-                "patient_id": patient_id, "rdv_id": rdv_id
+                "status": "success",
+                "message": "Check-in effectué !",
+                "patient_id": patient_id,
+                "rdv_id": rdv_id
             })
+
+        # CAS 2 : Déjà check-in
+        elif raison == "already_checkin":
+            print("⚠️ CHECK-IN DÉJÀ EFFECTUÉ")
+            return jsonify({
+                "status": "already_checkin",
+                "message": "Vous avez déjà effectué votre check-in aujourd'hui !",
+                "patient_id": patient_id,
+                "rdv_id": rdv_id
+            }), 200
+
+        # CAS 3 : Erreur
         else:
-            return jsonify({"status": "error", "message": "Erreur check-in Spring Boot"}), 500
+            print("❌ CHECK-IN ÉCHOUÉ")
+            return jsonify({
+                "status": "error",
+                "message": "Erreur check-in Spring Boot"
+            }), 500
 
     except Exception as e:
+        print(f"❌ ERREUR CRITIQUE checkin: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
@@ -486,22 +559,38 @@ def capture_et_associer():
         patient_id = data.get('patient_id')
         vecteur    = data.get('vecteur')
 
+        print(f"\n{'=' * 50}")
+        print(f"📊 CAPTURE ET ASSOCIER - NOUVEAU PATIENT")
+        print(f"{'=' * 50}")
+        print(f"👤 Patient ID reçu: {patient_id}")
+        print(f"📐 Vecteur reçu: {type(vecteur)}")
+
         if vecteur is None or not patient_id:
             return jsonify({"status": "error", "message": "patient_id et vecteur requis"}), 400
 
-        if isinstance(vecteur, np.ndarray):
+        if isinstance(vecteur, list):
+            print(f"   Dimensions: {len(vecteur)}")
+            print(f"   Premieres valeurs: {vecteur[:3]}")
+        elif isinstance(vecteur, np.ndarray):
+            print(f"   Type numpy: {vecteur.dtype}")
+            print(f"   Dimensions: {vecteur.shape}")
             vecteur = vecteur.tolist()
 
         vecteur_bytes = np.array(vecteur, dtype=np.float64).tobytes()
+        print(f"   Taille en bytes: {len(vecteur_bytes)}")
+
         if len(vecteur_bytes) == 0:
             return jsonify({"status": "error", "message": "vecteur vide"}), 400
 
         url = f"{URL_JAVA_BIOMETRIE}/{patient_id}/biometrie"
+        print(f"   URL: {url}")
+
         response = requests.put(
             url, data=vecteur_bytes,
             headers={"Content-Type": "application/octet-stream"}, timeout=10
         )
 
+        print(f"   Reponse Java: HTTP {response.status_code}")
         if response.status_code == 200:
             print(f"✅ Biométrie enregistrée pour patient {patient_id}")
             return jsonify({"status": "success", "message": "Biométrie enregistrée"})
@@ -546,6 +635,7 @@ def verifier_attente_tablette2():
 
 # ============================================
 # 10. BLUEPRINT TABLETTE 2
+# MERGE : vient entièrement de toi (absent chez collègue)
 # ============================================
 from tablette2_consultation import tablette2_bp, init_tablette2
 
@@ -585,4 +675,5 @@ if __name__ == '__main__':
     print("   Consultation        : POST /api/visage/consulter")
     print("   Status              : GET  /api/visage/tablette2/status")
     print("=" * 55 + "\n")
+    # MERGE : use_reloader=False (toi) conservé — évite double chargement Whisper/DeepFace
     app.run(debug=True, host='0.0.0.0', port=8000, use_reloader=False)
