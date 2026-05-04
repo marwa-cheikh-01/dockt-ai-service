@@ -32,12 +32,14 @@
             overflow: hidden;
         }
 
+        /* ── HEADER ── */
         #header {
             background: linear-gradient(135deg, #0d6e4f, #1a9268);
             padding: 16px 20px;
             display: flex;
             align-items: center;
             gap: 12px;
+            flex-shrink: 0;
         }
 
         .header-icon {
@@ -85,6 +87,7 @@
             }
         }
 
+        /* ── MESSAGES ── */
         #messages {
             flex: 1;
             overflow-y: auto;
@@ -107,7 +110,7 @@
         .msg {
             display: flex;
             gap: 8px;
-            max-width: 85%;
+            max-width: 88%;
             animation: fadeIn 0.2s ease;
         }
 
@@ -157,7 +160,6 @@
             border-radius: 14px;
             font-size: 13.5px;
             line-height: 1.6;
-            white-space: pre-wrap;
         }
 
         .msg.bot .bubble {
@@ -171,6 +173,7 @@
             background: #0d6e4f;
             color: #fff;
             border-bottom-right-radius: 4px;
+            white-space: pre-wrap;
         }
 
         .bubble.blocked {
@@ -179,6 +182,36 @@
             color: #c53030;
         }
 
+        /* ── FAQ BUTTONS (inside chat) ── */
+        .faq-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            margin-top: 4px;
+        }
+
+        .faq-btn {
+            background: #f0fdf4;
+            color: #0d6e4f;
+            border: 1px solid #86efac;
+            border-radius: 10px;
+            padding: 7px 12px;
+            font-size: 12.5px;
+            font-family: inherit;
+            cursor: pointer;
+            text-align: left;
+            transition: background 0.15s, transform 0.1s;
+        }
+
+        .faq-btn:hover {
+            background: #dcfce7;
+        }
+
+        .faq-btn:active {
+            transform: scale(0.98);
+        }
+
+        /* ── PHARMA CARDS ── */
         .pharma-card {
             background: #f0fdf4;
             border: 1px solid #86efac;
@@ -243,6 +276,7 @@
             color: #854d0e;
         }
 
+        /* ── QUICK BUTTONS BAR ── */
         #quick-btns {
             padding: 8px 14px;
             display: flex;
@@ -250,6 +284,7 @@
             flex-wrap: wrap;
             background: #fff;
             border-top: 1px solid #e2e8f0;
+            flex-shrink: 0;
         }
 
         .qbtn {
@@ -260,20 +295,22 @@
             padding: 5px 12px;
             font-size: 12px;
             cursor: pointer;
-            transition: background 0.15s;
             font-family: inherit;
+            transition: background 0.15s;
         }
 
         .qbtn:hover {
             background: #dcfce7;
         }
 
+        /* ── INPUT BAR ── */
         #input-bar {
             padding: 12px 14px;
             display: flex;
             gap: 8px;
             background: #fff;
             border-top: 1px solid #e2e8f0;
+            flex-shrink: 0;
         }
 
         #user-input {
@@ -330,6 +367,7 @@
             fill: #fff;
         }
 
+        /* ── TYPING INDICATOR ── */
         .typing {
             display: flex;
             gap: 4px;
@@ -377,13 +415,19 @@
                 <p><span class="dot"></span>En ligne · Français / عربي</p>
             </div>
         </div>
+
         <div id="messages"></div>
+
+        <!-- Remplace tout le contenu de #quick-btns -->
         <div id="quick-btns">
-            <button class="qbtn" onclick="send('pharmacie de garde')">💊 Pharmacie de garde</button>
-            <button class="qbtn" onclick="send('j ai de la fievre')">🌡️ Fièvre</button>
-            <button class="qbtn" onclick="send('j ai mal a la tete')">🤕 Maux de tête</button>
-            <button class="qbtn" onclick="send('premiers secours coupure')">🩹 Premiers secours</button>
+            <button class="qbtn" onclick="send('Comment prendre un rendez-vous ?')">📅 Prendre un RDV</button>
+            <button class="qbtn" onclick="send('Comment créer un compte sur DOCKT ?')">📝 Créer un compte</button>
+            <button class="qbtn" onclick="send('Comment annuler un rendez-vous ?')">❌ Annuler un RDV</button>
+            <button class="qbtn" onclick="send('Comment faire mon check-in ?')">✅ Check-in</button>
+            <button class="qbtn" onclick="send('Pharmacie de garde à Oujda')">💊 Pharmacie de garde</button>
+            <button class="qbtn" onclick="send('Comment changer mon mot de passe ?')">🔒 Mot de passe</button>
         </div>
+
         <div id="input-bar">
             <textarea id="user-input" placeholder="Posez votre question..."></textarea>
             <button id="send-btn" onclick="send()">
@@ -397,37 +441,90 @@
     <script>
         const API = 'http://127.0.0.1:8000';
 
-        window.onload = () => {
-            addMsg('bot', 'Bonjour ! Je suis votre assistant médical pour Oujda.\n\nJe peux vous aider à :\n- 🏥 Trouver la pharmacie de garde\n- ❓ Répondre à vos questions de santé\n\n⚠️ Je ne donne pas de conseils sur les médicaments.');
-        };
+        // ── Liste FAQ utilisée pour les boutons inline ──
+        const FAQ_ITEMS = [
+            { icon: '📅', label: 'Comment prendre un rendez-vous ?', q: 'Comment prendre un rendez-vous ?' },
+            { icon: '📝', label: 'Comment créer un compte ?', q: 'Comment créer un compte ?' },
+            { icon: '❌', label: 'Comment annuler un rendez-vous ?', q: 'Comment annuler un rendez-vous ?' },
+            { icon: '✅', label: 'Comment faire mon check-in ?', q: 'Comment faire mon check-in ?' },
+            { icon: '💊', label: 'Pharmacie de garde à Oujda', q: 'Pharmacie de garde à Oujda' },
+            { icon: '🔒', label: 'Comment changer mon mot de passe ?', q: 'Comment changer mon mot de passe ?' },
+        ];
 
+        // ── Rendu Markdown minimal (bold, italic, sauts de ligne) ──
+        function renderMarkdown(text) {
+            return text
+                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                .replace(/\n/g, '<br>');
+        }
+
+        // ── Ajoute un message bulle ──
         function addMsg(role, text, cls) {
             const msgs = document.getElementById('messages');
             const div = document.createElement('div');
             div.className = 'msg ' + role;
+
             const av = document.createElement('div');
             av.className = 'avatar ' + (role === 'bot' ? 'bot-av' : 'user-av');
             av.textContent = role === 'bot' ? '🏥' : '👤';
+
             const bub = document.createElement('div');
             bub.className = 'bubble' + (cls ? ' ' + cls : '');
-            bub.textContent = text;
+
+            // innerHTML pour le bot (markdown rendu), textContent pour l'user (sécurité XSS)
+            if (role === 'bot') {
+                bub.innerHTML = renderMarkdown(text);
+            } else {
+                bub.textContent = text;
+            }
+
             div.appendChild(av);
             div.appendChild(bub);
             msgs.appendChild(div);
             msgs.scrollTop = msgs.scrollHeight;
         }
 
+        // ── Ajoute les boutons FAQ inline dans le chat ──
+        function addFaqButtons() {
+            const msgs = document.getElementById('messages');
+            const div = document.createElement('div');
+            div.className = 'msg bot';
+
+            const av = document.createElement('div');
+            av.className = 'avatar bot-av';
+            av.textContent = '🏥';
+
+            const grid = document.createElement('div');
+            grid.className = 'faq-grid';
+
+            FAQ_ITEMS.forEach(f => {
+                const btn = document.createElement('button');
+                btn.className = 'faq-btn';
+                btn.textContent = `${f.icon} ${f.label}`;
+                btn.onclick = () => send(f.q);
+                grid.appendChild(btn);
+            });
+
+            div.appendChild(av);
+            div.appendChild(grid);
+            msgs.appendChild(div);
+            msgs.scrollTop = msgs.scrollHeight;
+        }
+
+        // ── Cartes pharmacies ──
         function addPharmaCards(pharmacies, source) {
             const msgs = document.getElementById('messages');
             const wrapper = document.createElement('div');
             wrapper.className = 'msg bot';
+
             const av = document.createElement('div');
             av.className = 'avatar bot-av';
             av.textContent = '🏥';
+
             const col = document.createElement('div');
             col.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
 
-            // Badge source
             const badge = document.createElement('span');
             badge.className = 'source-badge ' + (source === 'live' ? 'source-live' : 'source-fallback');
             badge.textContent = source === 'live' ? '🟢 Données en temps réel' : '🟡 Données de secours';
@@ -464,6 +561,7 @@
             msgs.scrollTop = msgs.scrollHeight;
         }
 
+        // ── Typing indicator ──
         function showTyping() {
             const msgs = document.getElementById('messages');
             const div = document.createElement('div');
@@ -473,12 +571,19 @@
             msgs.appendChild(div);
             msgs.scrollTop = msgs.scrollHeight;
         }
-
         function hideTyping() {
             const t = document.getElementById('typing');
             if (t) t.remove();
         }
 
+        // ── Message de bienvenue ──
+        window.onload = () => {
+            addMsg('bot', '👋 Bonjour ! Je suis votre assistant DOCKT.\n\nVoici ce que je peux faire pour vous :');
+            addFaqButtons();
+            addMsg('bot', '⚠️ Urgence médicale ? Appelez le 150 immédiatement.');
+        };
+
+        // ── Envoi d'un message ──
         async function send(preset) {
             const input = document.getElementById('user-input');
             const text = (preset || input.value).trim();
@@ -496,13 +601,12 @@
 
             try {
                 if (isPharmaQuery) {
-                    // Appel direct à /api/pharmacies (scraping temps réel)
+                    // ── Appel direct au scraping ──
                     const res = await fetch(API + '/api/pharmacies');
                     if (!res.ok) throw new Error('HTTP ' + res.status);
                     const data = await res.json();
                     hideTyping();
 
-                    // Gère les deux formats : [] ou { source, data[] }
                     const liste = Array.isArray(data) ? data : (data.data || []);
                     const source = data.source || 'fallback';
 
@@ -513,28 +617,41 @@
                     }
 
                 } else {
-                    // Appel à /api/chat pour les questions de santé
+                    // ── Appel au chatbot ──
                     const res = await fetch(API + '/api/chat', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ message: text })
                     });
-                    if (!res.ok) throw new Error('HTTP ' + res.status);
                     const data = await res.json();
                     hideTyping();
 
+                    // 1. Cartes pharmacies (si backend renvoie data.pharmacies)
                     if (data.pharmacies) {
-                        addPharmaCards(data.pharmacies, 'live');
-                    } else {
-                        const isBlocked = data.reply && data.reply.includes('autorisé');
-                        addMsg('bot', data.reply || data.error || 'Erreur inconnue.', isBlocked ? 'blocked' : '');
+                        addPharmaCards(data.pharmacies, data.source || 'live');
+                    }
+
+                    // 2. Texte de réponse
+                    if (data.reply) {
+                        addMsg('bot', data.reply);
+                    }
+
+                    // 3. Boutons FAQ inline (si backend envoie "faq": true)
+                    if (data.faq) {
+                        addFaqButtons();
+                    }
+
+                    // 4. Fallback si rien reçu
+                    if (!data.reply && !data.pharmacies && !data.faq) {
+                        addMsg('bot', 'Une erreur inattendue est survenue. Veuillez réessayer.');
                     }
                 }
 
             } catch (e) {
                 hideTyping();
                 console.error('Erreur fetch:', e);
-                addMsg('bot', 'Erreur de connexion au serveur.\nVérifiez que Flask tourne sur le port 8000.', 'blocked');
+                addMsg('bot', '⚠️ Impossible de joindre le serveur.\n\nVérifiez votre connexion ou réessayez dans un instant.');
+                addMsg('bot', '⚠️ Urgence médicale ? Appelez le 150.');
             }
 
             document.getElementById('send-btn').disabled = false;

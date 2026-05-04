@@ -320,180 +320,169 @@ def get_pharmacies():
 
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
-MED_KEYWORDS = ["médicament", "posologie", "dose", "dosage", "comprimé",
-                 "ordonnance", "antibiotique", "sirop", "gélule", "prescription"]
+MED_KEYWORDS = [
+    "médicament", "posologie", "dose", "dosage", "comprimé", "cachet",
+    "ordonnance", "antibiotique", "sirop", "gélule", "prescription",
+    "traitement", "pilule", "vaccin", "injection", "diagnostic"
+]
 
 PHARMA_KEYWORDS = ["pharmacie", "garde", "ouverte", "nuit", "urgence", "صيدلية"]
 
-SYSTEM_PROMPT = """Tu es un assistant médical pour les patients à Oujda, Maroc.
-Tu réponds en français ou en arabe selon la langue utilisée.
-Tu peux répondre aux questions générales de santé : symptômes, hygiène, premiers secours.
-Tu REFUSES toute question sur les médicaments, dosages ou prescriptions.
-Tu es concis, bienveillant et professionnel.
-En cas d'urgence, rappelle d'appeler le 150 (SAMU)."""
+FAQ_MESSAGE = (
+    "🌟 Voici ce que je peux faire pour vous :\n\n"
+    "📅 **1. Comment prendre un rendez-vous sur DOCKT ?**\n"
+    "📝 **2. Comment créer un compte sur DOCKT ?**\n"
+    "❌ **3. Comment annuler ou modifier mon rendez-vous ?**\n"
+    "✅ **4. Comment faire mon check-in au cabinet ?**\n"
+    "🏥 **5. Comment trouver une pharmacie de garde à Oujda ?**\n"
+    "🔒 **6. Comment changer mon mot de passe ?**\n"
+    "Posez-moi l'une de ces questions et je serai ravi de vous aider ! 😊\n"
+    "⚠️ *Urgence médicale ?* Appelez le **150** (SAMU) immédiatement."
+)
 
+SYSTEM_PROMPT = """Tu es un assistant administratif pour la plateforme DOCKT à Oujda, Maroc.
+Tu réponds en français ou en arabe selon la langue utilisée par l'utilisateur.
+
+Tu PEUX aider avec :
+- Expliquer comment prendre un rendez-vous sur DOCKT
+- Expliquer comment créer un compte sur DOCKT
+- Expliquer comment annuler ou modifier un rendez-vous
+- Expliquer comment faire le check-in au cabinet
+- Trouver la pharmacie de garde à Oujda
+- Expliquer comment changer mon mot de passe
+- Répondre aux questions générales sur la plateforme DOCKT
+
+Si une question concerne les médicaments, dosages, diagnostics ou tout sujet médical sensible,
+réponds gentiment que tu ne peux pas aider avec ça et oriente vers un médecin ou le 150.
+
+Sois toujours concis, bienveillant et professionnel.
+Pour les urgences, rappelle toujours d'appeler le 150 (SAMU)."""
+
+
+# ============================================
+# KEYWORDS
+# ============================================
+# ============================================
+# RÉPONSES STATIQUES PAR QUESTION
+# ============================================
+
+REPONSES_STATIQUES = {
+    "rendez-vous": (
+        "📅 **Comment prendre un rendez-vous sur DOCKT ?**\n\n"
+        "1️⃣ Connectez-vous à votre compte sur l'application DOCKT\n"
+        "2️⃣ Cliquez sur **'Prendre un rendez-vous'**\n"
+        "3️⃣ Choisissez une **date et une heure** qui vous conviennent\n"
+        "4️⃣ Confirmez votre rendez-vous\n\n"
+        "✅ Vous recevrez une confirmation par notification."
+    ),
+    "compte": (
+        "📝 **Comment créer un compte sur DOCKT ?**\n\n"
+        "1️⃣ Ouvrez l'application **DOCKT**\n"
+        "2️⃣ Cliquez sur **'Créer un compte'**\n"
+        "3️⃣ Renseignez votre **nom, prénom, email et téléphone**\n"
+        "4️⃣ Choisissez un **mot de passe sécurisé**\n"
+        "5️⃣ Complétez votre **profil médical** (optionnel)\n\n"
+        "✅ Votre compte est prêt à être utilisé !"
+    ),
+    "annuler": (
+        "❌ **Comment annuler ou modifier un rendez-vous ?**\n\n"
+        "1️⃣ Connectez-vous à votre compte DOCKT\n"
+        "2️⃣ Allez dans **'Mes rendez-vous'**\n"
+        "3️⃣ Sélectionnez le rendez-vous concerné\n"
+        "4️⃣ Cliquez sur **'Annuler'** ou **'Modifier'**\n"
+        "5️⃣ Confirmez votre choix\n\n"
+        "⚠️ Pensez à annuler au moins **2 heures avant** votre rendez-vous."
+    ),
+    "check": (
+        "✅ **Comment faire mon check-in au cabinet ?**\n\n"
+        "1️⃣ Arrivez au cabinet le jour de votre rendez-vous\n"
+        "2️⃣ Approchez-vous de la **tablette DOCKT** à l'accueil\n"
+        "3️⃣ Placez votre visage devant la **caméra** pour la reconnaissance\n"
+        "4️⃣ Le système vous identifie **automatiquement**\n"
+        "5️⃣ Votre check-in est confirmé sur l'écran\n\n"
+        "✅ Le médecin est notifié de votre arrivée automatiquement."
+    ),
+
+    "mot de passe": (
+        "🔒 **Comment changer mon mot de passe ?**\n\n"
+        "1️⃣ Connectez-vous à votre compte DOCKT\n"
+        "2️⃣ Allez dans **'Mon profil'** → **'Paramètres'**\n"
+        "3️⃣ Cliquez sur **'Changer le mot de passe'**\n"
+        "4️⃣ Saisissez votre **ancien mot de passe**\n"
+        "5️⃣ Entrez et confirmez votre **nouveau mot de passe**\n"
+        "6️⃣ Cliquez sur **'Enregistrer'**\n\n"
+        "✅ Votre mot de passe est mis à jour."
+    ),
+}
+
+MED_KEYWORDS   = [
+    "médicament", "posologie", "dose", "dosage", "comprimé", "cachet",
+    "ordonnance", "antibiotique", "sirop", "gélule", "prescription",
+    "pilule", "vaccin", "injection", "diagnostic"
+]
+PHARMA_KEYWORDS = ["pharmacie", "garde", "ouverte", "nuit", "صيدلية"]
+SERVICE_KEYWORDS = ["service", "services", "que peux", "que pouvez", "quels sont vos", "aide"]
+
+# ============================================
+# ROUTE CHAT
+# ============================================
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
     data = request.get_json(silent=True)
     if not data or "message" not in data:
-        return jsonify({"error": "Champ 'message' manquant"}), 400
+        return jsonify({"reply": "Voici ce que je peux faire pour vous :", "faq": True}), 200
 
-    message = data.get("message", "").strip()
+    message       = data.get("message", "").strip()
     message_lower = message.lower()
 
+    # 1️⃣ Sujets médicaux → refus
     if any(k in message_lower for k in MED_KEYWORDS):
-        return jsonify({"reply": "⚠️ Je ne suis pas autorisé à donner des conseils sur les médicaments. Consultez un pharmacien ou appelez le 150."})
+        return jsonify({
+            "reply": (
+                "Je suis désolé, je ne suis pas autorisé à répondre aux questions "
+                "sur les médicaments, traitements ou diagnostics médicaux.\n"
+                "Pour votre sécurité, consultez un médecin ou appelez le **150** (SAMU)."
+            ),
+            "faq": True
+        })
 
+    # 2️⃣ Services généraux → boutons FAQ
+    if any(k in message_lower for k in SERVICE_KEYWORDS):
+        return jsonify({"reply": "Voici ce que je peux faire pour vous :", "faq": True})
+
+    # 3️⃣ Pharmacies → cartes
     if any(k in message_lower for k in PHARMA_KEYWORDS):
         pharmacies = scrape_pharmacies_oujda() or PHARMACIES_FALLBACK
-        result = "🏥 Pharmacies de garde aujourd'hui à Oujda :\n\n"
-        for p in pharmacies[:3]:
-            maps_link = f"\n🗺️ {p['maps']}" if p.get('maps') else ""
-            result += f"🏥 {p['name']}\n📍 {p['address']}\n📞 {p['phone']} — {p['garde']}{maps_link}\n\n"
-        result += "⚠️ Appelez avant de vous déplacer. Urgence : 150"
-        return jsonify({"reply": result})
-
-    if not GEMINI_KEY:
-        return jsonify({"error": "Clé API Gemini non configurée"}), 500
-
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
-    body = {
-        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-        "contents": [{"parts": [{"text": message}]}]
-    }
-    try:
-        res = http_requests.post(url, json=body, timeout=30)
-        res.raise_for_status()
-        reply = res.json()["candidates"][0]["content"]["parts"][0]["text"]
-        return jsonify({"reply": reply})
-    except http_requests.exceptions.Timeout:
-        return jsonify({"reply": "⏱️ Délai dépassé. Réessayez."}), 504
-    except Exception as e:
-        return jsonify({"reply": f"Erreur API : {str(e)}"}), 500
-
-# ============================================
-# 9. ROUTES — RECONNAISSANCE FACIALE
-# ============================================
-
-@app.route('/api/visage/status', methods=['GET'])
-def visage_status():
-    return jsonify({"status": "success", "deepface_ready": True})
-
-
-@app.route('/api/visage/extraire_vecteur', methods=['POST'])
-def extraire_vecteur():
-    tmp_path = None
-    try:
-        if 'image' in request.files:
-            vecteur, tmp_path = extraire_embedding(request.files['image'])
-        else:
-            data = request.get_json()
-            if not data or 'image' not in data:
-                return jsonify({"status": "error", "message": "Aucune image reçue"}), 400
-            vecteur, tmp_path = extraire_embedding(data['image'])
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        if vecteur is None:
-            return jsonify({"status": "error", "message": "Aucun visage détecté"}), 500
-        return jsonify({"status": "success", "vecteur": vecteur, "taille": len(vecteur)})
-    except Exception as e:
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
-@app.route('/api/visage/reconnaitre', methods=['POST'])
-def reconnaitre_visage():
-    tmp_path = None
-    try:
-        if 'image' in request.files:
-            vecteur, tmp_path = extraire_embedding(request.files['image'])
-        else:
-            data = request.get_json()
-            if not data or 'image' not in data:
-                return jsonify({"status": "error", "message": "Aucune image reçue"}), 400
-            vecteur, tmp_path = extraire_embedding(data['image'])
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        if vecteur is None:
-            return jsonify({"status": "error", "message": "Aucun visage détecté"}), 500
-        patient = appeler_java_reconnaitre(vecteur)
-        if patient:
-            patient_id = patient.get('idPatient') or patient.get('id')
-            nom    = patient.get('nom', '')
-            prenom = patient.get('prenom', '')
-            return jsonify({
-                "status": "success", "vecteur": vecteur, "taille": len(vecteur),
-                "patient_id": patient_id, "nom": nom, "prenom": prenom
-            })
         return jsonify({
-            "status": "inconnu", "message": "Patient non reconnu", "vecteur": vecteur
-        }), 404
-    except Exception as e:
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        return jsonify({"status": "error", "message": str(e)}), 500
+            "reply": "Pharmacies de garde aujourd'hui à Oujda :",
+            "pharmacies": pharmacies[:5],
+            "source": "live" if pharmacy_cache else "fallback"
+        })
 
+   # ── Dans la route /api/chat, remplace la boucle de recherche par : ──
 
-@app.route('/api/visage/checkin', methods=['POST'])
-def checkin():
-    global dernier_patient_reconnu
-    try:
-        data = request.get_json()
-        if not data or 'patient_id' not in data:
-            return jsonify({"status": "error", "message": "patient_id requis"}), 400
-        patient_id = data['patient_id']
-        nom    = data.get('nom', '')
-        prenom = data.get('prenom', '')
-        rdv_id = get_rdv_du_jour(patient_id)
-        if not rdv_id:
-            return jsonify({"status": "no_rdv", "message": "Aucun RDV aujourd'hui", "patient_id": patient_id}), 200
-        succes = faire_checkin_spring(rdv_id)
-        dernier_patient_reconnu = {
-            "status": "reconnu" if succes else "checkin_failed",
-            "patient_id": patient_id, "nom": nom, "prenom": prenom,
-            "rdv_id": rdv_id, "timestamp": time.time()
-        }
-        if succes:
-            return jsonify({"status": "success", "message": "Check-in effectué !", "patient_id": patient_id, "rdv_id": rdv_id})
-        return jsonify({"status": "error", "message": "Erreur check-in Spring Boot"}), 500
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+    # 4️⃣ Réponses statiques — ordre précis, du plus spécifique au plus général
+    if "annuler" in message_lower or "modifier" in message_lower:
+        return jsonify({"reply": REPONSES_STATIQUES["annuler"]})
 
+    if "check" in message_lower:
+        return jsonify({"reply": REPONSES_STATIQUES["check"]})
 
-@app.route('/api/visage/dernier_checkin', methods=['GET'])
-def dernier_checkin():
-    global dernier_patient_reconnu
-    resultat = dernier_patient_reconnu.copy()
-    if resultat['status'] != 'none' and time.time() - resultat['timestamp'] > 30:
-        dernier_patient_reconnu = {"status": "none", "patient_id": None, "nom": None, "prenom": None, "timestamp": 0}
-        return jsonify({"status": "none"})
-    if resultat['status'] == 'reconnu':
-        dernier_patient_reconnu = {"status": "none", "patient_id": None, "nom": None, "prenom": None, "timestamp": 0}
-    return jsonify(resultat)
+    if "mot de passe" in message_lower or "password" in message_lower:
+        return jsonify({"reply": REPONSES_STATIQUES["mot de passe"]})
 
+    if "compte" in message_lower or "créer" in message_lower or "inscription" in message_lower:
+        return jsonify({"reply": REPONSES_STATIQUES["compte"]})
 
-@app.route('/api/visage/verifier', methods=['POST'])
-def verifier_visage():
-    path1 = path2 = None
-    try:
-        data = request.get_json()
-        if not data or 'image1' not in data or 'image2' not in data:
-            return jsonify({"status": "error", "message": "Deux images requises"}), 400
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp1:
-            tmp1.write(bytes(data['image1'])); path1 = tmp1.name
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp2:
-            tmp2.write(bytes(data['image2'])); path2 = tmp2.name
-        result = DeepFace.verify(img1_path=path1, img2_path=path2, model_name="Facenet", enforce_detection=False)
-        for p in [path1, path2]:
-            if p and os.path.exists(p): os.unlink(p)
-        return jsonify({"status": "success", "verifie": result['verified'], "distance": result['distance']})
-    except Exception as e:
-        for p in [path1, path2]:
-            if p and os.path.exists(p): os.unlink(p)
-        return jsonify({"status": "error", "message": str(e)}), 500
+    if "prendre" in message_lower or "rendez-vous" in message_lower or "rdv" in message_lower:
+        return jsonify({"reply": REPONSES_STATIQUES["prendre"]})
 
+    # 5️⃣ Rien trouvé → boutons FAQ
+    return jsonify({
+        "reply": "Je n'ai pas bien compris votre question. Voici ce que je peux faire :",
+        "faq": True
+    }), 200
 # ============================================
 # 10. ROUTES — TABLETTES
 # ============================================
