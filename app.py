@@ -1,10 +1,10 @@
 import os
 import uuid
 import time
+import base64
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import whisper
-import cv2
 import numpy as np
 from deepface import DeepFace
 import tempfile
@@ -14,10 +14,10 @@ app = Flask(__name__)
 CORS(app)
 
 # ============================================
-# 1. CHARGEMENT WHISPER (modèle base - plus précis)
+# 1. CHARGEMENT WHISPER
 # ============================================
-print("⏳ Chargement du modèle Whisper 'base'... (plus précis que tiny)")
-model = whisper.load_model("small")  # ← small pour plus de precision voix 
+print("⏳ Chargement du modèle Whisper 'tiny'...")
+model = whisper.load_model("tiny")
 print("✅ Modèle chargé !")
 
 # ============================================
@@ -31,19 +31,34 @@ dernier_patient_reconnu = {
     "nom": None, "prenom": None, "timestamp": 0
 }
 
-# URLs
-URL_JAVA_RECONNAITRE = "http://localhost:8082/api/patients/reconnaitre"
-URL_JAVA_BIOMETRIE   = "http://localhost:8082/api/patients"
-URL_JAVA_AVEC_BIOMETRIE = "http://localhost:8082/api/patients/avec-biometrie"
-URL_SPRING_RDV       = "http://localhost:8081/api/rdv/patient"
-URL_SPRING_CHECKIN   = "http://localhost:8081/api/file-attente/checkin"
-
+# Dictionnaire partagé avec tablette2_consultation.py
+# { patient_id: { rdv_id, debut, nom, prenom } }
+consultation_en_cours = {}
 
 # ============================================
-# FONCTIONS UTILITAIRES
+# 3. URLs
+# ============================================
+URL_JAVA_RECONNAITRE            = "http://localhost:8082/api/patients/reconnaitre"
+URL_JAVA_BIOMETRIE              = "http://localhost:8082/api/patients"
+URL_SPRING_RDV                  = "http://localhost:8081/api/rdv/patient"
+URL_SPRING_CHECKIN              = "http://localhost:8081/api/file-attente/checkin"
+URL_SPRING_STATUT_CONSULTATION  = "http://localhost:8081/api/file-attente/statut-consultation"
+
+# ============================================
+# 4. HEADERS SPRING — API ouverte
+# ============================================
+HEADERS_SPRING = {}
+
+# ============================================
+# 5. FONCTIONS UTILITAIRES
 # ============================================
 
 def extraire_embedding(image_source):
+    """
+    Extrait un vecteur Facenet (128 dims) depuis une image.
+    Accepte FileStorage Flask ou bytes bruts.
+    Retourne (vecteur_list, tmp_path) ou (None, None).
+    """
     tmp_path = None
     try:
         if hasattr(image_source, 'read'):
@@ -62,6 +77,7 @@ def extraire_embedding(image_source):
         )
         vecteur = embedding[0]['embedding']
         return vecteur, tmp_path
+
     except Exception as e:
         print(f"❌ Erreur extraction embedding: {e}")
         if tmp_path and os.path.exists(tmp_path):
@@ -70,6 +86,10 @@ def extraire_embedding(image_source):
 
 
 def appeler_java_reconnaitre(vecteur):
+    """
+    Envoie le vecteur (bytes float64) au MS1 Java sur /reconnaitre.
+    Retourne dict patient ou None.
+    """
     try:
         vecteur_bytes = np.array(vecteur, dtype=np.float64).tobytes()
         response = requests.post(
@@ -88,69 +108,143 @@ def appeler_java_reconnaitre(vecteur):
 
 
 def get_rdv_du_jour(patient_id):
+    """
+    Retourne le rdv_id du RDV d'aujourd'hui pour ce patient.
+    Retourne None si aucun.
+    """
     try:
         url = f"{URL_SPRING_RDV}/{patient_id}"
-        print(f"\n📡 [get_rdv_du_jour] Appel: {url}")
-        
+        print(f"\n📡 [get_rdv_du_jour] GET {url}")
 
+        response = requests.get(url, headers=HEADERS_SPRING, timeout=10)
         print(f"📡 [get_rdv_du_jour] Status: {response.status_code}")
-        
+
         if response.status_code == 200:
             rdvs = response.json()
             aujourd_hui = time.strftime("%Y-%m-%d")
-            print(f"📅 [get_rdv_du_jour] Aujourd'hui: {aujourd_hui}")
-            print(f"📋 [get_rdv_du_jour] Nombre de RDVs: {len(rdvs)}")
-            
+            print(f"📅 Aujourd'hui: {aujourd_hui} | RDVs: {len(rdvs)}")
+
             for rdv in rdvs:
                 date_rdv = rdv.get('datePrevue')
-                rdv_id = rdv.get('id')
-                
+                rdv_id   = rdv.get('id')
                 if date_rdv:
                     if isinstance(date_rdv, str):
                         date_rdv = date_rdv.split('T')[0]
                     elif hasattr(date_rdv, 'year'):
                         date_rdv = date_rdv.strftime("%Y-%m-%d")
-                    
                     if str(date_rdv) == aujourd_hui:
                         print(f"   ✅ RDV DU JOUR TROUVÉ: ID={rdv_id}")
                         return rdv_id
-            
-            print("   ⚠️ Aucun RDV ne correspond à aujourd'hui")
-        elif response.status_code == 403:
-            print("   ❌ ERREUR 403: Token JWT invalide ou expiré !")
+
+            print("   ⚠️ Aucun RDV aujourd'hui")
         else:
             print(f"   ❌ Erreur HTTP {response.status_code}")
         return None
-        
+
     except Exception as e:
         print(f"❌ [get_rdv_du_jour] Exception: {e}")
         return None
 
 
 def faire_checkin_spring(rdv_id):
+    """Check-in Spring Boot MS2 (tablette 1)."""
     try:
         url = f"{URL_SPRING_CHECKIN}/{rdv_id}"
-        print(f"📡 [faire_checkin_spring] Appel: PUT {url}")
-        
+        print(f"📡 [faire_checkin_spring] PUT {url}")
+        response = requests.put(url, headers=HEADERS_SPRING, timeout=10)
         print(f"📡 [faire_checkin_spring] Status: {response.status_code}")
-        
         if response.status_code == 200:
-            print(f"✅ CHECK-IN Spring Boot OK (RDV {rdv_id})")
+            print(f"✅ CHECK-IN OK (RDV {rdv_id})")
             return True
-        
-        if response.status_code == 403:
-            print("   ❌ ERREUR 403: Token JWT invalide ou expiré !")
-        else:
-            print(f"⚠️ Erreur check-in Spring → HTTP {response.status_code}")
+        print(f"⚠️ Erreur check-in → HTTP {response.status_code}")
         return False
-        
     except Exception as e:
         print(f"❌ [faire_checkin_spring] Exception: {e}")
         return False
 
 
+def update_statut_consultation(rdv_id, statut):
+    """
+    Met à jour le statut de consultation dans MS2.
+    EN_CONSULTATION → heureEffective
+    TERMINE         → heureFin
+    """
+    try:
+        url = f"{URL_SPRING_STATUT_CONSULTATION}/{rdv_id}?statutConsultation={statut}"
+        print(f"\n📡 [update_statut] PUT {url}")
+        response = requests.put(url, headers=HEADERS_SPRING, timeout=10)
+        print(f"📡 [update_statut] HTTP: {response.status_code}")
+        if response.status_code == 200:
+            print(f"✅ Statut → {statut} (RDV {rdv_id})")
+            return True
+        elif response.status_code == 404:
+            print(f"❌ RDV {rdv_id} introuvable dans MS2")
+        else:
+            print(f"⚠️ HTTP {response.status_code}: {response.text[:200]}")
+        return False
+    except requests.exceptions.ConnectionError:
+        print("❌ MS2 Spring Boot injoignable sur localhost:8081")
+        return False
+    except Exception as e:
+        print(f"❌ [update_statut] Exception: {e}")
+        return False
+
+
+def get_vecteur_depuis_bd(patient_id):
+    """
+    Récupère imageBiometrique (bytea) du patient depuis MS1.
+    Spring Boot retourne le champ byte[] en Base64 automatiquement.
+    Retourne np.array float64 ou None.
+    """
+    try:
+        url = f"http://localhost:8082/api/patients/{patient_id}"
+        print(f"\n📡 [get_vecteur_bd] GET {url}")
+
+        response = requests.get(url, timeout=10)
+        print(f"📡 [get_vecteur_bd] HTTP {response.status_code}")
+
+        if response.status_code != 200:
+            print(f"❌ Patient {patient_id} introuvable dans MS1")
+            return None
+
+        data = response.json()
+        image_bio = data.get('imageBiometrique')
+
+        if not image_bio:
+            print(f"⚠️ Pas d'image biométrique pour patient {patient_id}")
+            return None
+
+        raw_bytes = base64.b64decode(image_bio)
+        vecteur   = np.frombuffer(raw_bytes, dtype=np.float64)
+        print(f"✅ Vecteur BDD : {len(vecteur)} dimensions")
+        return vecteur
+
+    except Exception as e:
+        print(f"❌ [get_vecteur_bd] Exception: {e}")
+        return None
+
+
+def calculer_similarite_cosinus(v1, v2):
+    """
+    Similarité cosinus entre deux vecteurs numpy.
+    1.0 = identiques | 0.0 = perpendiculaires | -1.0 = opposés
+    Seuil recommandé Facenet : >= 0.70
+    """
+    try:
+        v1 = np.array(v1, dtype=np.float64)
+        v2 = np.array(v2, dtype=np.float64)
+        norme1 = np.linalg.norm(v1)
+        norme2 = np.linalg.norm(v2)
+        if norme1 == 0 or norme2 == 0:
+            return 0.0
+        return float(np.dot(v1, v2) / (norme1 * norme2))
+    except Exception as e:
+        print(f"❌ [similarite_cosinus] Exception: {e}")
+        return 0.0
+
+
 # ============================================
-# 3. RECONNAISSANCE VOCALE
+# 6. RECONNAISSANCE VOCALE
 # ============================================
 
 @app.route('/api/status', methods=['GET'])
@@ -185,7 +279,7 @@ def transcribe_audio():
 
 
 # ============================================
-# 4. RECONNAISSANCE FACIALE
+# 7. RECONNAISSANCE FACIALE
 # ============================================
 
 @app.route('/api/visage/status', methods=['GET'])
@@ -212,11 +306,7 @@ def extraire_vecteur():
             return jsonify({"status": "error", "message": "Aucun visage détecté"}), 500
 
         print(f"📐 Vecteur extrait ({len(vecteur)} dims)")
-        return jsonify({
-            "status": "success",
-            "vecteur": vecteur,
-            "taille": len(vecteur)
-        })
+        return jsonify({"status": "success", "vecteur": vecteur, "taille": len(vecteur)})
 
     except Exception as e:
         if tmp_path and os.path.exists(tmp_path):
@@ -250,18 +340,12 @@ def reconnaitre_visage():
             prenom = patient.get('prenom', '')
             print(f"👤 Patient reconnu : {prenom} {nom} (ID: {patient_id})")
             return jsonify({
-                "status": "success",
-                "vecteur": vecteur,
-                "taille": len(vecteur),
-                "patient_id": patient_id,
-                "nom": nom,
-                "prenom": prenom
+                "status": "success", "vecteur": vecteur, "taille": len(vecteur),
+                "patient_id": patient_id, "nom": nom, "prenom": prenom
             })
         else:
             return jsonify({
-                "status": "inconnu",
-                "message": "Patient non reconnu",
-                "vecteur": vecteur
+                "status": "inconnu", "message": "Patient non reconnu", "vecteur": vecteur
             }), 404
 
     except Exception as e:
@@ -275,64 +359,44 @@ def checkin():
     global dernier_patient_reconnu
     try:
         print("\n" + "="*50)
-        print("✅ CHECK-IN DEMANDÉ")
+        print("✅ CHECK-IN TABLETTE 1")
         print("="*50)
-        
+
         data = request.get_json()
-        print(f"📥 Données reçues: {data}")
-        
         if not data or 'patient_id' not in data:
-            print("❌ patient_id manquant")
             return jsonify({"status": "error", "message": "patient_id requis"}), 400
 
         patient_id = data['patient_id']
         nom    = data.get('nom', '')
         prenom = data.get('prenom', '')
-        
-        print(f"👤 Patient: {prenom} {nom} (ID: {patient_id}")
+        print(f"👤 Patient: {prenom} {nom} (ID: {patient_id})")
 
-        print("🔍 Étape 1: Recherche du RDV du jour...")
         rdv_id = get_rdv_du_jour(patient_id)
-        
         if not rdv_id:
-            print("⚠️ Aucun RDV trouvé pour aujourd'hui")
             return jsonify({
-                "status": "no_rdv",
-                "message": "Aucun RDV aujourd'hui",
+                "status": "no_rdv", "message": "Aucun RDV aujourd'hui",
                 "patient_id": patient_id
             }), 200
 
-        print(f"✅ RDV trouvé: {rdv_id}")
-
-        print("🔍 Étape 2: Appel Spring Boot check-in...")
         succes = faire_checkin_spring(rdv_id)
-
         dernier_patient_reconnu = {
-            "status": "reconnu" if succes else "checkin_failed",
+            "status":     "reconnu" if succes else "checkin_failed",
             "patient_id": patient_id,
-            "nom": nom,
-            "prenom": prenom,
-            "rdv_id": rdv_id,
-            "timestamp": time.time()
+            "nom":        nom,
+            "prenom":     prenom,
+            "rdv_id":     rdv_id,
+            "timestamp":  time.time()
         }
 
         if succes:
-            print("✅ CHECK-IN RÉUSSI")
             return jsonify({
-                "status": "success",
-                "message": "Check-in effectué !",
-                "patient_id": patient_id,
-                "rdv_id": rdv_id
+                "status": "success", "message": "Check-in effectué !",
+                "patient_id": patient_id, "rdv_id": rdv_id
             })
         else:
-            print("❌ CHECK-IN ÉCHOUÉ")
-            return jsonify({
-                "status": "error",
-                "message": "Erreur check-in Spring Boot"
-            }), 500
+            return jsonify({"status": "error", "message": "Erreur check-in Spring Boot"}), 500
 
     except Exception as e:
-        print(f"❌ ERREUR CRITIQUE checkin: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
@@ -362,17 +426,18 @@ def verifier_visage():
         if not data or 'image1' not in data or 'image2' not in data:
             return jsonify({"status": "error", "message": "Deux images requises"}), 400
         with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp1:
-            tmp1.write(bytes(data['image1']))
-            path1 = tmp1.name
+            tmp1.write(bytes(data['image1'])); path1 = tmp1.name
         with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp2:
-            tmp2.write(bytes(data['image2']))
-            path2 = tmp2.name
-        result = DeepFace.verify(img1_path=path1, img2_path=path2,
-                                  model_name="Facenet", enforce_detection=False)
+            tmp2.write(bytes(data['image2'])); path2 = tmp2.name
+        result = DeepFace.verify(
+            img1_path=path1, img2_path=path2,
+            model_name="Facenet", enforce_detection=False
+        )
         for p in [path1, path2]:
             if p and os.path.exists(p): os.unlink(p)
-        return jsonify({"status": "success", "verifie": result['verified'],
-                        "distance": result['distance']})
+        return jsonify({
+            "status": "success", "verifie": result['verified'], "distance": result['distance']
+        })
     except Exception as e:
         for p in [path1, path2]:
             if p and os.path.exists(p): os.unlink(p)
@@ -380,7 +445,7 @@ def verifier_visage():
 
 
 # ============================================
-# 5. ENDPOINTS TABLETTE 1
+# 8. ENDPOINTS TABLETTE 1
 # ============================================
 
 @app.route('/api/visage/demarrer_capture', methods=['POST'])
@@ -391,7 +456,7 @@ def demarrer_capture():
     if not patient_id:
         return jsonify({"status": "error", "message": "patient_id requis"}), 400
     patient_en_attente_de_capture = patient_id
-    print(f"📱 Nouveau patient {patient_id} en attente de capture")
+    print(f"📱 Patient {patient_id} en attente de capture (tablette 1)")
     return jsonify({"status": "waiting", "patient_id": patient_id,
                     "message": "Veuillez vous présenter devant la caméra"})
 
@@ -400,8 +465,7 @@ def demarrer_capture():
 def verifier_attente():
     global patient_en_attente_de_capture
     if patient_en_attente_de_capture:
-        return jsonify({"status": "pending",
-                        "patient_id": patient_en_attente_de_capture})
+        return jsonify({"status": "pending", "patient_id": patient_en_attente_de_capture})
     return jsonify({"status": "none"})
 
 
@@ -416,67 +480,46 @@ def consommer_attente():
 def capture_et_associer():
     try:
         data = request.get_json()
+        if not data:
+            return jsonify({"status": "error", "message": "Body JSON requis"}), 400
+
         patient_id = data.get('patient_id')
         vecteur    = data.get('vecteur')
-        
-        print(f"\n{'='*50}")
-        print(f"📊 CAPTURE ET ASSOCIER - NOUVEAU PATIENT")
-        print(f"{'='*50}")
-        print(f"👤 Patient ID reçu: {patient_id}")
-        print(f"📐 Vecteur reçu: {type(vecteur)}")
-        
-        if vecteur is None:
-            print("❌ ERREUR: vecteur est NULL!")
-            return jsonify({"status": "error", "message": "vecteur null"}), 400
-        
-        if isinstance(vecteur, list):
-            print(f"   Dimensions: {len(vecteur)}")
-            print(f"   Premieres valeurs: {vecteur[:3]}")
-        elif isinstance(vecteur, np.ndarray):
-            print(f"   Type numpy: {vecteur.dtype}")
-            print(f"   Dimensions: {vecteur.shape}")
-        
-        if not patient_id or not vecteur:
+
+        if vecteur is None or not patient_id:
             return jsonify({"status": "error", "message": "patient_id et vecteur requis"}), 400
-        
-        # Conversion en bytes
+
         if isinstance(vecteur, np.ndarray):
             vecteur = vecteur.tolist()
-        
+
         vecteur_bytes = np.array(vecteur, dtype=np.float64).tobytes()
-        print(f"   Taille en bytes: {len(vecteur_bytes)}")
-        
         if len(vecteur_bytes) == 0:
-            print("❌ ERREUR: vecteur_bytes est vide!")
             return jsonify({"status": "error", "message": "vecteur vide"}), 400
-        
+
         url = f"{URL_JAVA_BIOMETRIE}/{patient_id}/biometrie"
-        print(f"   URL: {url}")
-        
         response = requests.put(
-            url,
-            data=vecteur_bytes,
-            headers={"Content-Type": "application/octet-stream"},
-            timeout=10
+            url, data=vecteur_bytes,
+            headers={"Content-Type": "application/octet-stream"}, timeout=10
         )
-        
-        print(f"   Reponse Java: HTTP {response.status_code}")
+
         if response.status_code == 200:
             print(f"✅ Biométrie enregistrée pour patient {patient_id}")
             return jsonify({"status": "success", "message": "Biométrie enregistrée"})
         else:
-            print(f"⚠️ Erreur: {response.text[:200]}")
-            return jsonify({"status": "error", "message": f"HTTP {response.status_code}"}), 500
-            
+            print(f"❌ Erreur MS1 → HTTP {response.status_code}: {response.text[:200]}")
+            return jsonify({"status": "error", "message": f"MS1 HTTP {response.status_code}"}), 500
+
     except Exception as e:
-        print(f"❌ ERREUR: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
 # ============================================
-# 6. ENDPOINTS TABLETTE 2
+# 9. ENDPOINTS TABLETTE 2 (signalisation optionnelle)
+# La logique principale est dans tablette2_consultation.py
+#   POST /api/visage/consulter
+#   GET  /api/visage/tablette2/status
 # ============================================
 
 @app.route('/api/visage/demarrer_capture_tablette2', methods=['POST'])
@@ -487,7 +530,7 @@ def demarrer_capture_tablette2():
     if not patient_id:
         return jsonify({"status": "error", "message": "patient_id requis"}), 400
     patient_en_attente_tablette2 = patient_id
-    print(f"🩺 Patient {patient_id} en attente Tablette 2")
+    print(f"🩺 Patient {patient_id} en attente tablette 2")
     return jsonify({"status": "waiting", "patient_id": patient_id})
 
 
@@ -502,17 +545,44 @@ def verifier_attente_tablette2():
 
 
 # ============================================
-# 7. LANCEMENT
+# 10. BLUEPRINT TABLETTE 2
 # ============================================
+from tablette2_consultation import tablette2_bp, init_tablette2
 
+app.register_blueprint(tablette2_bp)
+
+init_tablette2({
+    "HEADERS_SPRING":                 HEADERS_SPRING,
+    "consultation_en_cours":          consultation_en_cours,
+    "URL_SPRING_STATUT_CONSULTATION": URL_SPRING_STATUT_CONSULTATION,
+    "extraire_embedding":             extraire_embedding,
+    "appeler_java_reconnaitre":       appeler_java_reconnaitre,
+    "get_rdv_du_jour":                get_rdv_du_jour,
+    "get_vecteur_depuis_bd":          get_vecteur_depuis_bd,
+    "calculer_similarite_cosinus":    calculer_similarite_cosinus,
+})
+
+
+# ============================================
+# 11. LANCEMENT
+# ============================================
 if __name__ == '__main__':
-    print("\n" + "=" * 50)
+    print("\n" + "=" * 55)
     print("🚀 SERVEUR IA DOCKT - EN LIGNE")
-    print("=" * 50)
-    print("👤 Reconnaitre    : /api/visage/reconnaitre")
-    print("📐 Extraire       : /api/visage/extraire_vecteur")
-    print("✅ Check-in       : /api/visage/checkin")
-    print("📡 Poll           : /api/visage/dernier_checkin")
-    print("🆕 Tablette 1     : /api/visage/demarrer_capture")
-    print("=" * 50 + "\n")
-    app.run(debug=True, host='0.0.0.0', port=8000)
+    print("=" * 55)
+    print("📡 Status              : GET  /api/status")
+    print("🎙️  Transcription       : POST /api/transcribe")
+    print("─" * 55)
+    print("✅ Tablette 1")
+    print("   Reconnaitre         : POST /api/visage/reconnaitre")
+    print("   Extraire vecteur    : POST /api/visage/extraire_vecteur")
+    print("   Check-in            : POST /api/visage/checkin")
+    print("   Poll résultat       : GET  /api/visage/dernier_checkin")
+    print("   Démarrer capture    : POST /api/visage/demarrer_capture")
+    print("   Associer biométrie  : POST /api/visage/capture_et_associer")
+    print("─" * 55)
+    print("🩺 Tablette 2")
+    print("   Consultation        : POST /api/visage/consulter")
+    print("   Status              : GET  /api/visage/tablette2/status")
+    print("=" * 55 + "\n")
+    app.run(debug=True, host='0.0.0.0', port=8000, use_reloader=False)
