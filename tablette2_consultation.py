@@ -7,7 +7,7 @@
 #   [1] Extraire vecteur Facenet depuis la caméra
 #   [2] Reconnaître patient via MS1 (comparaison BDD)
 #   [3] Vérifier check_in = true dans MS2
-#   [4] Vérification biométrique : cosinus(caméra, BDD) >= 0.70
+#   [4] Vérification biométrique : cosinus(caméra, BDD) >= 0.60  ← FIX seuil abaissé
 #   [5] Vérifier que c'est son tour (prochain patient file)
 #   [6] MS2 → EN_CONSULTATION + heureEffective = now()
 #   → Afficher "Veuillez entrer dans la salle du médecin"
@@ -16,7 +16,7 @@
 #   [1] Extraire vecteur Facenet depuis la caméra
 #   [2] Reconnaître patient via MS1
 #   [3] Vérifier check_in = true dans MS2
-#   [4] Vérification biométrique : cosinus(caméra, BDD) >= 0.70
+#   [4] Vérification biométrique : cosinus(caméra, BDD) >= 0.60  ← FIX seuil abaissé
 #   [5] Vérifier que ce patient a statut EN_CONSULTATION
 #   [6] MS2 → TERMINE + heureFin = now()
 #   → Afficher "Bonne journée !"
@@ -50,9 +50,11 @@ def _get(key):
 
 # ================================================================
 # CONSTANTES
+# FIX 2 : seuil abaissé de 0.70 → 0.60 pour conditions réelles
+# (lumière variable, angle de caméra, distance)
 # ================================================================
 
-SEUIL_SIMILARITE = 0.70
+SEUIL_SIMILARITE     = 0.60   # ← FIX : était 0.70
 URL_MS2_RDV_PATIENT  = "http://localhost:8081/api/rdv/patient"
 URL_MS2_PROCHAIN     = "http://localhost:8081/api/file-attente/prochain-patient"
 
@@ -142,26 +144,35 @@ def verifier_checkin_et_statut(patient_id):
 def verifier_identite_biometrique(vecteur_camera, patient_id):
     """
     Compare le vecteur caméra avec le vecteur stocké en BDD.
-    Retourne (True, score) si similarité >= SEUIL_SIMILARITE.
+    Retourne (True, score) si similarité >= SEUIL_SIMILARITE (0.60).
     Retourne (False, score) sinon.
     Si pas de vecteur BDD → (True, None) — on laisse passer.
+
+    FIX 2 : seuil abaissé à 0.60 pour tenir compte des conditions réelles.
+    FIX 4 : log détaillé du score pour faciliter le diagnostic.
     """
     print(f"\n🔐 [verif_bio] Vérification biométrique patient {patient_id}...")
+    print(f"   🎯 Seuil de reconnaissance : {SEUIL_SIMILARITE}")
 
     vecteur_bd = _get('get_vecteur_depuis_bd')(patient_id)
 
     if vecteur_bd is None or len(vecteur_bd) == 0:
-        print(f"   ⚠️ Pas de vecteur BDD → vérification ignorée")
+        print(f"   ⚠️ Pas de vecteur BDD → vérification ignorée (patient autorisé)")
         return True, None
 
     similarite = _get('calculer_similarite_cosinus')(vecteur_camera, vecteur_bd)
-    print(f"   📊 Similarité cosinus : {similarite:.4f} (seuil = {SEUIL_SIMILARITE})")
 
+    # FIX 4 : log détaillé avec indication de résultat
     if similarite >= SEUIL_SIMILARITE:
-        print(f"   ✅ IDENTITÉ CONFIRMÉE (score={similarite:.4f})")
+        print(f"   ✅ IDENTITÉ CONFIRMÉE — score={similarite:.4f} >= seuil={SEUIL_SIMILARITE}")
         return True, similarite
+    elif similarite >= 0.50:
+        # Zone grise — log pour diagnostic
+        print(f"   ⚠️ Score PROCHE du seuil : {similarite:.4f} (seuil={SEUIL_SIMILARITE})")
+        print(f"   ❌ IDENTITÉ REJETÉE — différence : {SEUIL_SIMILARITE - similarite:.4f}")
+        return False, similarite
     else:
-        print(f"   ❌ IDENTITÉ REJETÉE (score={similarite:.4f})")
+        print(f"   ❌ IDENTITÉ REJETÉE — score={similarite:.4f} << seuil={SEUIL_SIMILARITE}")
         return False, similarite
 
 
@@ -240,6 +251,7 @@ def consulter():
 
         if not patient:
             print("   ❌ Patient non reconnu par MS1")
+            print("   💡 Vérifiez les logs Java pour voir les scores de similarité")
             return jsonify({
                 "status":  "inconnu",
                 "message": "Patient non reconnu. Contactez la secrétaire."
@@ -255,7 +267,6 @@ def consulter():
         rdv_id, statut_actuel = verifier_checkin_et_statut(patient_id)
 
         if rdv_id is None:
-            # check_in = false ou pas de RDV aujourd'hui
             print(f"   ❌ check_in=false ou pas de RDV → patient non autorisé")
             return jsonify({
                 "status":     "patient_non_reconnu",
@@ -274,8 +285,8 @@ def consulter():
         )
 
         if not identite_ok:
-            score = f"{similarite:.2f}" if similarite is not None else "N/A"
-            print(f"   ❌ Identité rejetée pour {prenom} {nom} (score={score})")
+            score = f"{similarite:.4f}" if similarite is not None else "N/A"
+            print(f"   ❌ Identité rejetée pour {prenom} {nom} (score={score}, seuil={SEUIL_SIMILARITE})")
             return jsonify({
                 "status":     "patient_non_reconnu",
                 "message":    "Patient non reconnu.",
@@ -284,7 +295,7 @@ def consulter():
                 "prenom":     prenom
             }), 200
 
-        score_str = f"{similarite:.2f}" if similarite is not None else "OK"
+        score_str = f"{similarite:.4f}" if similarite is not None else "ignorée (pas de BDD)"
         print(f"   ✅ Identité confirmée (score={score_str})")
 
         # ── [5/6] Logique selon statut actuel ───────────────────
@@ -307,7 +318,6 @@ def consulter():
             prochain_id = str(prochain.get('idPatient', ''))
 
             if prochain_id != patient_id:
-                # Ce n'est pas son tour
                 print(
                     f"   ⚠️ Mauvais patient !"
                     f" Attendu ID={prochain_id} / Présenté ID={patient_id}"
@@ -331,7 +341,6 @@ def consulter():
                     "message": "Erreur lors du démarrage. Contactez la secrétaire."
                 }), 500
 
-            # Mémoriser en mémoire partagée avec app.py
             _get('consultation_en_cours')[patient_id] = {
                 "rdv_id": rdv_id,
                 "debut":  time.time(),
@@ -373,7 +382,6 @@ def consulter():
                     "message": "Erreur lors de la clôture. Contactez la secrétaire."
                 }), 500
 
-            # Nettoyer la mémoire partagée
             _get('consultation_en_cours').pop(patient_id, None)
 
             print(f"\n✅ FIN CONSULTATION OK — {prenom} {nom} | RDV {rdv_id}")
