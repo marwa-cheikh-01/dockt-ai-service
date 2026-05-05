@@ -391,7 +391,7 @@ REPONSES_STATIQUES = {
         "3️⃣ Sélectionnez le rendez-vous concerné\n"
         "4️⃣ Cliquez sur **'Annuler'** ou **'Modifier'**\n"
         "5️⃣ Confirmez votre choix\n\n"
-        "⚠️ Pensez à annuler au moins **2 heures avant** votre rendez-vous."
+        "⚠️ Pensez à annuler au moins **24 heures avant** votre rendez-vous."
     ),
     "check": (
         "✅ **Comment faire mon check-in au cabinet ?**\n\n"
@@ -401,18 +401,8 @@ REPONSES_STATIQUES = {
         "4️⃣ Le système vous identifie **automatiquement**\n"
         "5️⃣ Votre check-in est confirmé sur l'écran\n\n"
         "✅ Le médecin est notifié de votre arrivée automatiquement."
-    ),
+    )
 
-    "mot de passe": (
-        "🔒 **Comment changer mon mot de passe ?**\n\n"
-        "1️⃣ Connectez-vous à votre compte DOCKT\n"
-        "2️⃣ Allez dans **'Mon profil'** → **'Paramètres'**\n"
-        "3️⃣ Cliquez sur **'Changer le mot de passe'**\n"
-        "4️⃣ Saisissez votre **ancien mot de passe**\n"
-        "5️⃣ Entrez et confirmez votre **nouveau mot de passe**\n"
-        "6️⃣ Cliquez sur **'Enregistrer'**\n\n"
-        "✅ Votre mot de passe est mis à jour."
-    ),
 }
 
 MED_KEYWORDS   = [
@@ -469,14 +459,11 @@ def chat():
     if "check" in message_lower:
         return jsonify({"reply": REPONSES_STATIQUES["check"]})
 
-    if "mot de passe" in message_lower or "password" in message_lower:
-        return jsonify({"reply": REPONSES_STATIQUES["mot de passe"]})
-
     if "compte" in message_lower or "créer" in message_lower or "inscription" in message_lower:
         return jsonify({"reply": REPONSES_STATIQUES["compte"]})
 
     if "prendre" in message_lower or "rendez-vous" in message_lower or "rdv" in message_lower:
-        return jsonify({"reply": REPONSES_STATIQUES["prendre"]})
+        return jsonify({"reply": REPONSES_STATIQUES["rendez-vous"]})
 
     # 5️⃣ Rien trouvé → boutons FAQ
     return jsonify({
