@@ -2,27 +2,75 @@ import os
 import uuid
 import time
 import base64
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import whisper
-import numpy as np
-from deepface import DeepFace
-import tempfile
 import requests
+import requests as http_requests
+import tempfile
+import cv2
+import numpy as np
+from flask import Flask, request, jsonify, render_template
+from flask_cors import CORS
+from dotenv import load_dotenv
+from bs4 import BeautifulSoup
+from deepface import DeepFace
+import whisper
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+
+load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins=["http://localhost:4200"])
+
+@app.route('/')
+def index():
+    return render_template('index.html')
 
 # ============================================
 # 1. CHARGEMENT WHISPER
 # ============================================
+
 print("⏳ Chargement du modèle Whisper 'small'...")
 model = whisper.load_model("small")
-print("✅ Modèle chargé !")
+print("✅ Whisper chargé !")
 
 # ============================================
-# 2. ÉTAT GLOBAL
+# 2. DRIVER SELENIUM GLOBAL (réutilisé)
 # ============================================
+
+def create_driver():
+    options = Options()
+    options.add_argument("--headless")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument("--blink-settings=imagesEnabled=false")
+    return webdriver.Chrome(
+        service=Service(ChromeDriverManager().install()),
+        options=options
+    )
+
+print("[INFO] Démarrage du driver Selenium...")
+selenium_driver = create_driver()
+print("[OK] Driver Selenium prêt !")
+
+# ============================================
+# 3. CACHE PHARMACIES (1 heure)
+# ============================================
+
+pharmacy_cache  = None
+cache_timestamp = 0
+CACHE_DURATION  = 3600
+
+# ============================================
+# 4. ÉTAT GLOBAL — RECONNAISSANCE FACIALE
+# ============================================
+
 patient_en_attente_de_capture = None
 patient_en_attente_tablette2  = None
 
@@ -33,32 +81,36 @@ dernier_patient_reconnu = {
 
 consultation_en_cours = {}
 
-# FIX 1 : Guard anti-doublon + accumulateur de vecteurs
-_biometrie_enregistree   = set()          # patients déjà enregistrés cette session
-_vecteurs_en_attente     = {}             # { patient_id: [vecteur1, vecteur2, ...] }
-_NB_VECTEURS_POUR_MOYENNE = 2            # on attend 2 captures pour faire la moyenne
+# Guard anti-doublon + accumulateur de vecteurs
+_biometrie_enregistree    = set()   # patients déjà enregistrés cette session
+_vecteurs_en_attente      = {}      # { patient_id: [vecteur1, vecteur2, ...] }
+_NB_VECTEURS_POUR_MOYENNE = 2       # on attend 2 captures pour faire la moyenne
 
 # ============================================
-# 3. URLs
+# 5. URLs & HEADERS
 # ============================================
-URL_JAVA_RECONNAITRE            = "http://localhost:8082/api/patients/reconnaitre"
-URL_JAVA_BIOMETRIE              = "http://localhost:8082/api/patients"
-URL_SPRING_RDV                  = "http://localhost:8081/api/rdv/patient"
-URL_SPRING_CHECKIN              = "http://localhost:8081/api/file-attente/checkin"
-URL_SPRING_STATUT_CONSULTATION  = "http://localhost:8081/api/file-attente/statut-consultation"
+
+URL_JAVA_RECONNAITRE           = "http://localhost:8082/api/patients/reconnaitre"
+URL_JAVA_BIOMETRIE             = "http://localhost:8082/api/patients"
+URL_SPRING_RDV                 = "http://localhost:8081/api/rdv/patient"
+URL_SPRING_CHECKIN             = "http://localhost:8081/api/file-attente/checkin"
+URL_SPRING_STATUT_CONSULTATION = "http://localhost:8081/api/file-attente/statut-consultation"
+
+JWT_TOKEN = os.getenv("JWT_TOKEN", "")
+GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+
+HEADERS_SPRING = {
+    "Authorization": JWT_TOKEN,
+    "Content-Type": "application/json"
+}
 
 # ============================================
-# 4. HEADERS SPRING
-# ============================================
-HEADERS_SPRING = {}
-
-# ============================================
-# 5. FONCTIONS UTILITAIRES
+# 6. FONCTIONS UTILITAIRES — DEEPFACE
 # ============================================
 
 def extraire_embedding(image_source):
     """
-    Extrait un vecteur Facenet (128 dims) depuis une image.
+    Extrait un vecteur Facenet depuis une image.
     Accepte FileStorage Flask ou bytes bruts.
     Retourne (vecteur_list, tmp_path) ou (None, None).
     """
@@ -120,7 +172,6 @@ def get_rdv_du_jour(patient_id):
     try:
         url = f"{URL_SPRING_RDV}/{patient_id}"
         print(f"\n📡 [get_rdv_du_jour] GET {url}")
-
         response = requests.get(url, headers=HEADERS_SPRING, timeout=10)
         print(f"📡 [get_rdv_du_jour] Status: {response.status_code}")
 
@@ -226,7 +277,6 @@ def get_vecteur_depuis_bd(patient_id):
     try:
         url = f"http://localhost:8082/api/patients/{patient_id}"
         print(f"\n📡 [get_vecteur_bd] GET {url}")
-
         response = requests.get(url, timeout=10)
         print(f"📡 [get_vecteur_bd] HTTP {response.status_code}")
 
@@ -268,9 +318,102 @@ def calculer_similarite_cosinus(v1, v2):
         print(f"❌ [similarite_cosinus] Exception: {e}")
         return 0.0
 
+# ============================================
+# 7. FONCTIONS UTILITAIRES — PHARMACIES
+# ============================================
+
+PHARMACIES_FALLBACK = [
+    {"name": "Pharmacie Al Amal",    "address": "Bd Mohammed V, Oujda",    "phone": "0536-682-411", "garde": "24h/24", "maps": "", "waze": "", "quartier": "Centre-ville"},
+    {"name": "Pharmacie Atlas",      "address": "Av. Hassan II, Oujda",     "phone": "0536-703-122", "garde": "Nuit",   "maps": "", "waze": "", "quartier": "Hay Qods"},
+    {"name": "Pharmacie Santé Plus", "address": "Rue Berkane, Oujda",       "phone": "0536-688-900", "garde": "Jour",   "maps": "", "waze": "", "quartier": "Lazaret"},
+    {"name": "Pharmacie Al Nour",    "address": "Bd El Maghreb El Arabi",   "phone": "0536-712-344", "garde": "24h/24", "maps": "", "waze": "", "quartier": "Sidi Maâfa"},
+]
+
+def scrape_pharmacies_oujda():
+    global pharmacy_cache, cache_timestamp
+
+    if pharmacy_cache and (time.time() - cache_timestamp) < CACHE_DURATION:
+        print("[CACHE] Pharmacies depuis le cache.")
+        return pharmacy_cache
+
+    driver = None
+    try:
+        driver = create_driver()
+        driver.get("https://oujda.pharmacieenpermanence.ma/")
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/pharmacie-']"))
+        )
+        time.sleep(2)
+
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+        pharmacies = []
+        name_links = soup.find_all("a", href=lambda h: h and "/pharmacie-" in h)
+
+        for link in name_links:
+            name_tag = link.find("h3")
+            if not name_tag:
+                continue
+            name = name_tag.get_text(strip=True)
+
+            parent = link.parent
+            for _ in range(6):
+                if parent and len(parent.get_text(strip=True)) > 80:
+                    break
+                parent = parent.parent if parent else None
+            if not parent:
+                continue
+
+            phone = "N/A"
+            tel_tag = parent.find("a", href=lambda h: h and "tel:" in str(h))
+            if tel_tag:
+                phone = tel_tag.get("href", "").replace("tel:", "").strip()
+
+            address = "Oujda"
+            skip = ["garde", "nuit", "jour", "24h", "maps", "waze",
+                    "voir", "détail", "téléphone", name.lower()]
+            for tag in parent.find_all(["p", "span", "div", "li"]):
+                txt = tag.get_text(strip=True)
+                if (8 < len(txt) < 120
+                        and not any(w in txt.lower() for w in skip)
+                        and not txt.startswith("053")
+                        and not txt.startswith("06")):
+                    address = txt
+                    break
+
+            maps_url, waze_url = "", ""
+            maps_tag = parent.find("a", href=lambda h: h and "google.com/maps" in str(h))
+            if maps_tag:
+                maps_url = maps_tag.get("href", "")
+            waze_tag = parent.find("a", href=lambda h: h and "waze.com" in str(h))
+            if waze_tag:
+                waze_url = waze_tag.get("href", "")
+
+            pharmacies.append({
+                "name": name, "address": address, "phone": phone,
+                "garde": "24h/24", "maps": maps_url, "waze": waze_url,
+                "quartier": "Oujda"
+            })
+
+        print(f"[SCRAPING] {len(pharmacies)} pharmacies trouvées.")
+        if pharmacies:
+            pharmacy_cache = pharmacies
+            cache_timestamp = time.time()
+            return pharmacies
+        return None
+
+    except Exception as e:
+        print(f"[ERREUR SELENIUM] {str(e)}")
+        return None
+
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except:
+                pass
 
 # ============================================
-# 6. RECONNAISSANCE VOCALE
+# 8. ROUTES — STATUT & WHISPER
 # ============================================
 
 @app.route('/api/status', methods=['GET'])
@@ -293,8 +436,10 @@ def transcribe_audio():
             os.remove(temp_path)
             return jsonify({"error": "Fichier audio vide"}), 400
         print(f"\n🎙️ Dictée reçue !")
+        start = time.time()
         result = model.transcribe(temp_path, language="fr", fp16=False)
         texte = result["text"]
+        print(f"[OK] Transcription en {round(time.time()-start,2)}s : {texte.strip()}")
         if os.path.exists(temp_path):
             os.remove(temp_path)
         return jsonify({"texte_transcrit": texte.strip()})
@@ -303,9 +448,150 @@ def transcribe_audio():
             os.remove(temp_path)
         return jsonify({"error": str(e)}), 500
 
+# ============================================
+# 9. ROUTES — PHARMACIES & CHATBOT
+# ============================================
+
+@app.route('/api/pharmacies', methods=['GET'])
+def get_pharmacies():
+    pharmacies = scrape_pharmacies_oujda()
+    if pharmacies:
+        return jsonify({"source": "live", "data": pharmacies})
+    return jsonify({"source": "fallback", "data": PHARMACIES_FALLBACK})
+
+
+MED_KEYWORDS = [
+    "médicament", "posologie", "dose", "dosage", "comprimé", "cachet",
+    "ordonnance", "antibiotique", "sirop", "gélule", "prescription",
+    "traitement", "pilule", "vaccin", "injection", "diagnostic"
+]
+
+PHARMA_KEYWORDS  = ["pharmacie", "garde", "ouverte", "nuit", "urgence", "صيدلية"]
+SERVICE_KEYWORDS = ["service", "services", "que peux", "que pouvez", "quels sont vos", "aide"]
+
+FAQ_MESSAGE = (
+    "🌟 Voici ce que je peux faire pour vous :\n\n"
+    "📅 **1. Comment prendre un rendez-vous sur DOCKT ?**\n"
+    "📝 **2. Comment créer un compte sur DOCKT ?**\n"
+    "❌ **3. Comment annuler ou modifier mon rendez-vous ?**\n"
+    "✅ **4. Comment faire mon check-in au cabinet ?**\n"
+    "🏥 **5. Comment trouver une pharmacie de garde à Oujda ?**\n"
+    "🔒 **6. Comment changer mon mot de passe ?**\n"
+    "Posez-moi l'une de ces questions et je serai ravi de vous aider ! 😊\n"
+    "⚠️ *Urgence médicale ?* Appelez le **150** (SAMU) immédiatement."
+)
+
+SYSTEM_PROMPT = """Tu es un assistant administratif pour la plateforme DOCKT à Oujda, Maroc.
+Tu réponds en français ou en arabe selon la langue utilisée par l'utilisateur.
+
+Tu PEUX aider avec :
+- Expliquer comment prendre un rendez-vous sur DOCKT
+- Expliquer comment créer un compte sur DOCKT
+- Expliquer comment annuler ou modifier un rendez-vous
+- Expliquer comment faire le check-in au cabinet
+- Trouver la pharmacie de garde à Oujda
+- Expliquer comment changer mon mot de passe
+- Répondre aux questions générales sur la plateforme DOCKT
+
+Si une question concerne les médicaments, dosages, diagnostics ou tout sujet médical sensible,
+réponds gentiment que tu ne peux pas aider avec ça et oriente vers un médecin ou le 150.
+
+Sois toujours concis, bienveillant et professionnel.
+Pour les urgences, rappelle toujours d'appeler le 150 (SAMU)."""
+
+REPONSES_STATIQUES = {
+    "rendez-vous": (
+        "📅 **Comment prendre un rendez-vous sur DOCKT ?**\n\n"
+        "1️⃣ Connectez-vous à votre compte sur l'application DOCKT\n"
+        "2️⃣ Cliquez sur **'Prendre un rendez-vous'**\n"
+        "3️⃣ Choisissez une **date et une heure** qui vous conviennent\n"
+        "4️⃣ Confirmez votre rendez-vous\n\n"
+        "✅ Vous recevrez une confirmation par notification."
+    ),
+    "compte": (
+        "📝 **Comment créer un compte sur DOCKT ?**\n\n"
+        "1️⃣ Ouvrez l'application **DOCKT**\n"
+        "2️⃣ Cliquez sur **'Créer un compte'**\n"
+        "3️⃣ Renseignez votre **nom, prénom, email et téléphone**\n"
+        "4️⃣ Choisissez un **mot de passe sécurisé**\n"
+        "5️⃣ Complétez votre **profil médical** (optionnel)\n\n"
+        "✅ Votre compte est prêt à être utilisé !"
+    ),
+    "annuler": (
+        "❌ **Comment annuler ou modifier un rendez-vous ?**\n\n"
+        "1️⃣ Connectez-vous à votre compte DOCKT\n"
+        "2️⃣ Allez dans **'Mes rendez-vous'**\n"
+        "3️⃣ Sélectionnez le rendez-vous concerné\n"
+        "4️⃣ Cliquez sur **'Annuler'** ou **'Modifier'**\n"
+        "5️⃣ Confirmez votre choix\n\n"
+        "⚠️ Pensez à annuler au moins **24 heures avant** votre rendez-vous."
+    ),
+    "check": (
+        "✅ **Comment faire mon check-in au cabinet ?**\n\n"
+        "1️⃣ Arrivez au cabinet le jour de votre rendez-vous\n"
+        "2️⃣ Approchez-vous de la **tablette DOCKT** à l'accueil\n"
+        "3️⃣ Placez votre visage devant la **caméra** pour la reconnaissance\n"
+        "4️⃣ Le système vous identifie **automatiquement**\n"
+        "5️⃣ Votre check-in est confirmé sur l'écran\n\n"
+        "✅ Le médecin est notifié de votre arrivée automatiquement."
+    )
+}
+
+
+@app.route('/api/chat', methods=['POST'])
+def chat():
+    data = request.get_json(silent=True)
+    if not data or "message" not in data:
+        return jsonify({"reply": "Voici ce que je peux faire pour vous :", "faq": True}), 200
+
+    message       = data.get("message", "").strip()
+    message_lower = message.lower()
+
+    # 1️⃣ Sujets médicaux → refus
+    if any(k in message_lower for k in MED_KEYWORDS):
+        return jsonify({
+            "reply": (
+                "Je suis désolé, je ne suis pas autorisé à répondre aux questions "
+                "sur les médicaments, traitements ou diagnostics médicaux.\n"
+                "Pour votre sécurité, consultez un médecin ou appelez le **150** (SAMU)."
+            ),
+            "faq": True
+        })
+
+    # 2️⃣ Services généraux → boutons FAQ
+    if any(k in message_lower for k in SERVICE_KEYWORDS):
+        return jsonify({"reply": "Voici ce que je peux faire pour vous :", "faq": True})
+
+    # 3️⃣ Pharmacies → cartes
+    if any(k in message_lower for k in PHARMA_KEYWORDS):
+        pharmacies = scrape_pharmacies_oujda() or PHARMACIES_FALLBACK
+        return jsonify({
+            "reply": "Pharmacies de garde aujourd'hui à Oujda :",
+            "pharmacies": pharmacies[:5],
+            "source": "live" if pharmacy_cache else "fallback"
+        })
+
+    # 4️⃣ Réponses statiques — ordre précis, du plus spécifique au plus général
+    if "annuler" in message_lower or "modifier" in message_lower:
+        return jsonify({"reply": REPONSES_STATIQUES["annuler"]})
+
+    if "check" in message_lower:
+        return jsonify({"reply": REPONSES_STATIQUES["check"]})
+
+    if "compte" in message_lower or "créer" in message_lower or "inscription" in message_lower:
+        return jsonify({"reply": REPONSES_STATIQUES["compte"]})
+
+    if "prendre" in message_lower or "rendez-vous" in message_lower or "rdv" in message_lower:
+        return jsonify({"reply": REPONSES_STATIQUES["rendez-vous"]})
+
+    # 5️⃣ Rien trouvé → boutons FAQ
+    return jsonify({
+        "reply": "Je n'ai pas bien compris votre question. Voici ce que je peux faire :",
+        "faq": True
+    }), 200
 
 # ============================================
-# 7. RECONNAISSANCE FACIALE
+# 10. ROUTES — RECONNAISSANCE FACIALE
 # ============================================
 
 @app.route('/api/visage/status', methods=['GET'])
@@ -496,9 +782,8 @@ def verifier_visage():
             if p and os.path.exists(p): os.unlink(p)
         return jsonify({"status": "error", "message": str(e)}), 500
 
-
 # ============================================
-# 8. ENDPOINTS TABLETTE 1
+# 11. ROUTES — TABLETTE 1 (capture biométrique)
 # ============================================
 
 @app.route('/api/visage/demarrer_capture', methods=['POST'])
@@ -557,8 +842,7 @@ def capture_et_associer():
             print(f"   Type numpy: {vecteur.dtype}")
             vecteur = vecteur.tolist()
 
-        # ── FIX 1 : Guard anti-doublon ─────────────────────────────────────
-        # Si ce patient est déjà enregistré dans cette session, on ignore
+        # Guard anti-doublon
         if patient_id in _biometrie_enregistree:
             print(f"⚠️ Biométrie déjà enregistrée pour patient {patient_id} — ignoré")
             return jsonify({
@@ -566,7 +850,7 @@ def capture_et_associer():
                 "message": "Biométrie déjà enregistrée (doublon ignoré)"
             })
 
-        # ── FIX 3 : Accumuler les vecteurs et calculer la moyenne ──────────
+        # Accumuler les vecteurs et calculer la moyenne
         if patient_id not in _vecteurs_en_attente:
             _vecteurs_en_attente[patient_id] = []
 
@@ -575,7 +859,6 @@ def capture_et_associer():
         print(f"   📦 Vecteurs accumulés pour patient {patient_id}: {nb}/{_NB_VECTEURS_POUR_MOYENNE}")
 
         if nb < _NB_VECTEURS_POUR_MOYENNE:
-            # Pas encore assez de vecteurs — on attend le prochain appel
             print(f"   ⏳ En attente de plus de captures ({nb}/{_NB_VECTEURS_POUR_MOYENNE})")
             return jsonify({
                 "status":  "accumulating",
@@ -583,11 +866,9 @@ def capture_et_associer():
                 "nb":      nb
             })
 
-        # On a assez de vecteurs → calculer la moyenne normalisée
+        # Calculer la moyenne normalisée (L2)
         tous_vecteurs = np.array(_vecteurs_en_attente[patient_id], dtype=np.float64)
         vecteur_moyen = np.mean(tous_vecteurs, axis=0)
-
-        # Normaliser le vecteur moyen (L2)
         norme = np.linalg.norm(vecteur_moyen)
         if norme > 0:
             vecteur_moyen = vecteur_moyen / norme
@@ -595,10 +876,8 @@ def capture_et_associer():
         print(f"   📊 Moyenne calculée sur {nb} vecteurs (normalisée)")
         print(f"   Premieres valeurs moyenne: {vecteur_moyen[:3].tolist()}")
 
-        # Nettoyer l'accumulateur
         del _vecteurs_en_attente[patient_id]
 
-        # Convertir en bytes et envoyer à MS1
         vecteur_bytes = vecteur_moyen.astype(np.float64).tobytes()
         print(f"   Taille en bytes: {len(vecteur_bytes)}")
 
@@ -612,11 +891,9 @@ def capture_et_associer():
             url, data=vecteur_bytes,
             headers={"Content-Type": "application/octet-stream"}, timeout=10
         )
-
         print(f"   Reponse Java: HTTP {response.status_code}")
 
         if response.status_code == 200:
-            # Marquer ce patient comme enregistré pour éviter les doublons
             _biometrie_enregistree.add(patient_id)
             print(f"✅ Biométrie enregistrée (moyenne {nb} captures) pour patient {patient_id}")
             return jsonify({
@@ -636,7 +913,7 @@ def capture_et_associer():
 @app.route('/api/visage/reinitialiser_biometrie', methods=['POST'])
 def reinitialiser_biometrie():
     """
-    Endpoint utilitaire : réinitialise le guard pour un patient
+    Réinitialise le guard pour un patient
     (utile si on veut re-enregistrer sa biométrie).
     """
     global _biometrie_enregistree, _vecteurs_en_attente
@@ -654,9 +931,8 @@ def reinitialiser_biometrie():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-
 # ============================================
-# 9. ENDPOINTS TABLETTE 2 (signalisation optionnelle)
+# 12. ROUTES — TABLETTE 2
 # ============================================
 
 @app.route('/api/visage/demarrer_capture_tablette2', methods=['POST'])
@@ -680,9 +956,8 @@ def verifier_attente_tablette2():
         return jsonify({"status": "pending", "patient_id": patient_id})
     return jsonify({"status": "none"})
 
-
 # ============================================
-# 10. BLUEPRINT TABLETTE 2
+# 13. BLUEPRINT TABLETTE 2 (consultation)
 # ============================================
 from tablette2_consultation import tablette2_bp, init_tablette2
 
@@ -699,16 +974,19 @@ init_tablette2({
     "calculer_similarite_cosinus":    calculer_similarite_cosinus,
 })
 
+# ============================================
+# 14. LANCEMENT
+# ============================================
 
-# ============================================
-# 11. LANCEMENT
-# ============================================
 if __name__ == '__main__':
     print("\n" + "=" * 55)
-    print("🚀 SERVEUR IA DOCKT - EN LIGNE")
+    print("🚀 SERVEUR IA DOCKT — EN LIGNE (port 8000)")
     print("=" * 55)
     print("📡 Status              : GET  /api/status")
     print("🎙️  Transcription       : POST /api/transcribe")
+    print("─" * 55)
+    print("💊 Pharmacies          : GET  /api/pharmacies")
+    print("🤖 Chatbot             : POST /api/chat")
     print("─" * 55)
     print("✅ Tablette 1")
     print("   Reconnaitre         : POST /api/visage/reconnaitre")
@@ -722,5 +1000,6 @@ if __name__ == '__main__':
     print("🩺 Tablette 2")
     print("   Consultation        : POST /api/visage/consulter")
     print("   Status              : GET  /api/visage/tablette2/status")
+    print("   Démarrer capture    : POST /api/visage/demarrer_capture_tablette2")
     print("=" * 55 + "\n")
-    app.run(debug=True, host='0.0.0.0', port=8000, use_reloader=False)
+    app.run(debug=False, host='0.0.0.0', port=8000, use_reloader=False)
