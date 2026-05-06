@@ -7,7 +7,7 @@ import requests as http_requests
 import tempfile
 import cv2
 import numpy as np
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
@@ -26,9 +26,6 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app, origins=["http://localhost:4200"])
 
-@app.route('/')
-def index():
-    return render_template('index.html')
 
 # ============================================
 # 1. CHARGEMENT WHISPER
