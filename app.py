@@ -14,17 +14,17 @@ app = Flask(__name__)
 CORS(app)
 
 # ============================================
-# 1. CHARGEMENT WHISPER (modèle base - plus précis)
+# 1. CHARGEMENT WHISPER
 # ============================================
-print("⏳ Chargement du modèle Whisper 'base'... (plus précis que tiny)")
-model = whisper.load_model("small")  # ← small pour plus de precision voix 
+print("⏳ Chargement du modèle Whisper 'small'...")
+model = whisper.load_model("small")
 print("✅ Modèle chargé !")
 
 # ============================================
 # 2. ÉTAT GLOBAL
 # ============================================
 patient_en_attente_de_capture = None
-patient_en_attente_tablette2  = None
+patient_en_attente_tablette2 = None
 
 dernier_patient_reconnu = {
     "status": "none", "patient_id": None,
@@ -32,11 +32,11 @@ dernier_patient_reconnu = {
 }
 
 # URLs
-URL_JAVA_RECONNAITRE = "http://localhost:8082/api/patients/reconnaitre"
-URL_JAVA_BIOMETRIE   = "http://localhost:8082/api/patients"
+URL_JAVA_RECONNAITRE    = "http://localhost:8082/api/patients/reconnaitre"
+URL_JAVA_BIOMETRIE      = "http://localhost:8082/api/patients"
 URL_JAVA_AVEC_BIOMETRIE = "http://localhost:8082/api/patients/avec-biometrie"
-URL_SPRING_RDV       = "http://localhost:8081/api/rdv/patient"
-URL_SPRING_CHECKIN   = "http://localhost:8081/api/file-attente/checkin"
+URL_SPRING_RDV          = "http://localhost:8081/api/rdv/patient"
+URL_SPRING_CHECKIN      = "http://localhost:8081/api/file-attente/checkin"
 
 
 # ============================================
@@ -80,8 +80,12 @@ def appeler_java_reconnaitre(vecteur):
         )
         if response.status_code == 200:
             return response.json()
-        print(f"⚠️ Java reconnaitre → HTTP {response.status_code}")
-        return None
+        elif response.status_code == 404:
+            # Patient non reconnu - ce n'est pas une erreur
+            return None
+        else:
+            print(f"⚠️ Java reconnaitre → HTTP {response.status_code}")
+            return None
     except Exception as e:
         print(f"❌ Erreur Java reconnaissance: {e}")
         return None
@@ -91,62 +95,81 @@ def get_rdv_du_jour(patient_id):
     try:
         url = f"{URL_SPRING_RDV}/{patient_id}"
         print(f"\n📡 [get_rdv_du_jour] Appel: {url}")
-        
+
+        response = requests.get(url, timeout=10)
 
         print(f"📡 [get_rdv_du_jour] Status: {response.status_code}")
-        
+
         if response.status_code == 200:
             rdvs = response.json()
             aujourd_hui = time.strftime("%Y-%m-%d")
             print(f"📅 [get_rdv_du_jour] Aujourd'hui: {aujourd_hui}")
             print(f"📋 [get_rdv_du_jour] Nombre de RDVs: {len(rdvs)}")
-            
+
             for rdv in rdvs:
                 date_rdv = rdv.get('datePrevue')
-                rdv_id = rdv.get('id')
-                
+                rdv_id   = rdv.get('id')
+
                 if date_rdv:
                     if isinstance(date_rdv, str):
                         date_rdv = date_rdv.split('T')[0]
                     elif hasattr(date_rdv, 'year'):
                         date_rdv = date_rdv.strftime("%Y-%m-%d")
-                    
+
                     if str(date_rdv) == aujourd_hui:
                         print(f"   ✅ RDV DU JOUR TROUVÉ: ID={rdv_id}")
                         return rdv_id
-            
+
             print("   ⚠️ Aucun RDV ne correspond à aujourd'hui")
+
         elif response.status_code == 403:
             print("   ❌ ERREUR 403: Token JWT invalide ou expiré !")
         else:
             print(f"   ❌ Erreur HTTP {response.status_code}")
+
         return None
-        
+
     except Exception as e:
         print(f"❌ [get_rdv_du_jour] Exception: {e}")
         return None
 
 
+# ✅ CORRIGÉ : retourne un tuple (succes, raison)
 def faire_checkin_spring(rdv_id):
     try:
         url = f"{URL_SPRING_CHECKIN}/{rdv_id}"
         print(f"📡 [faire_checkin_spring] Appel: PUT {url}")
-        
+
+        response = requests.put(url, timeout=10)
+
         print(f"📡 [faire_checkin_spring] Status: {response.status_code}")
-        
+
         if response.status_code == 200:
             print(f"✅ CHECK-IN Spring Boot OK (RDV {rdv_id})")
-            return True
-        
+            return True, "success"
+
         if response.status_code == 403:
             print("   ❌ ERREUR 403: Token JWT invalide ou expiré !")
-        else:
-            print(f"⚠️ Erreur check-in Spring → HTTP {response.status_code}")
-        return False
-        
+            return False, "error"
+
+        # ✅ NOUVEAU : Détecter le double check-in (Spring renvoie 500 + message)
+        if response.status_code == 500:
+            try:
+                error_body = response.text
+                print(f"   ⚠️ Body erreur: {error_body[:200]}")
+                if "déjà effectué" in error_body or "already" in error_body.lower():
+                    print("   ⚠️ Check-in déjà effectué pour ce patient !")
+                    return False, "already_checkin"
+            except Exception:
+                pass
+            return False, "error"
+
+        print(f"⚠️ Erreur check-in Spring → HTTP {response.status_code}")
+        return False, "error"
+
     except Exception as e:
         print(f"❌ [faire_checkin_spring] Exception: {e}")
-        return False
+        return False, "error"
 
 
 # ============================================
@@ -270,17 +293,18 @@ def reconnaitre_visage():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+# ✅ CORRIGÉ : gestion du double check-in
 @app.route('/api/visage/checkin', methods=['POST'])
 def checkin():
     global dernier_patient_reconnu
     try:
-        print("\n" + "="*50)
+        print("\n" + "=" * 50)
         print("✅ CHECK-IN DEMANDÉ")
-        print("="*50)
-        
+        print("=" * 50)
+
         data = request.get_json()
         print(f"📥 Données reçues: {data}")
-        
+
         if not data or 'patient_id' not in data:
             print("❌ patient_id manquant")
             return jsonify({"status": "error", "message": "patient_id requis"}), 400
@@ -288,12 +312,12 @@ def checkin():
         patient_id = data['patient_id']
         nom    = data.get('nom', '')
         prenom = data.get('prenom', '')
-        
-        print(f"👤 Patient: {prenom} {nom} (ID: {patient_id}")
+
+        print(f"👤 Patient: {prenom} {nom} (ID: {patient_id})")
 
         print("🔍 Étape 1: Recherche du RDV du jour...")
         rdv_id = get_rdv_du_jour(patient_id)
-        
+
         if not rdv_id:
             print("⚠️ Aucun RDV trouvé pour aujourd'hui")
             return jsonify({
@@ -305,10 +329,10 @@ def checkin():
         print(f"✅ RDV trouvé: {rdv_id}")
 
         print("🔍 Étape 2: Appel Spring Boot check-in...")
-        succes = faire_checkin_spring(rdv_id)
+        succes, raison = faire_checkin_spring(rdv_id)  # ✅ tuple maintenant
 
         dernier_patient_reconnu = {
-            "status": "reconnu" if succes else "checkin_failed",
+            "status": "reconnu" if succes else raison,
             "patient_id": patient_id,
             "nom": nom,
             "prenom": prenom,
@@ -316,6 +340,7 @@ def checkin():
             "timestamp": time.time()
         }
 
+        # ✅ CAS 1 : Check-in réussi
         if succes:
             print("✅ CHECK-IN RÉUSSI")
             return jsonify({
@@ -324,6 +349,18 @@ def checkin():
                 "patient_id": patient_id,
                 "rdv_id": rdv_id
             })
+
+        # ✅ CAS 2 : Déjà check-in
+        elif raison == "already_checkin":
+            print("⚠️ CHECK-IN DÉJÀ EFFECTUÉ")
+            return jsonify({
+                "status": "already_checkin",
+                "message": "Vous avez déjà effectué votre check-in aujourd'hui !",
+                "patient_id": patient_id,
+                "rdv_id": rdv_id
+            }), 200
+
+        # ❌ CAS 3 : Erreur
         else:
             print("❌ CHECK-IN ÉCHOUÉ")
             return jsonify({
@@ -368,7 +405,7 @@ def verifier_visage():
             tmp2.write(bytes(data['image2']))
             path2 = tmp2.name
         result = DeepFace.verify(img1_path=path1, img2_path=path2,
-                                  model_name="Facenet", enforce_detection=False)
+                                 model_name="Facenet", enforce_detection=False)
         for p in [path1, path2]:
             if p and os.path.exists(p): os.unlink(p)
         return jsonify({"status": "success", "verifie": result['verified'],
@@ -418,48 +455,47 @@ def capture_et_associer():
         data = request.get_json()
         patient_id = data.get('patient_id')
         vecteur    = data.get('vecteur')
-        
-        print(f"\n{'='*50}")
+
+        print(f"\n{'=' * 50}")
         print(f"📊 CAPTURE ET ASSOCIER - NOUVEAU PATIENT")
-        print(f"{'='*50}")
+        print(f"{'=' * 50}")
         print(f"👤 Patient ID reçu: {patient_id}")
         print(f"📐 Vecteur reçu: {type(vecteur)}")
-        
+
         if vecteur is None:
             print("❌ ERREUR: vecteur est NULL!")
             return jsonify({"status": "error", "message": "vecteur null"}), 400
-        
+
         if isinstance(vecteur, list):
             print(f"   Dimensions: {len(vecteur)}")
             print(f"   Premieres valeurs: {vecteur[:3]}")
         elif isinstance(vecteur, np.ndarray):
             print(f"   Type numpy: {vecteur.dtype}")
             print(f"   Dimensions: {vecteur.shape}")
-        
+
         if not patient_id or not vecteur:
             return jsonify({"status": "error", "message": "patient_id et vecteur requis"}), 400
-        
-        # Conversion en bytes
+
         if isinstance(vecteur, np.ndarray):
             vecteur = vecteur.tolist()
-        
+
         vecteur_bytes = np.array(vecteur, dtype=np.float64).tobytes()
         print(f"   Taille en bytes: {len(vecteur_bytes)}")
-        
+
         if len(vecteur_bytes) == 0:
             print("❌ ERREUR: vecteur_bytes est vide!")
             return jsonify({"status": "error", "message": "vecteur vide"}), 400
-        
+
         url = f"{URL_JAVA_BIOMETRIE}/{patient_id}/biometrie"
         print(f"   URL: {url}")
-        
+
         response = requests.put(
             url,
             data=vecteur_bytes,
             headers={"Content-Type": "application/octet-stream"},
             timeout=10
         )
-        
+
         print(f"   Reponse Java: HTTP {response.status_code}")
         if response.status_code == 200:
             print(f"✅ Biométrie enregistrée pour patient {patient_id}")
@@ -467,7 +503,7 @@ def capture_et_associer():
         else:
             print(f"⚠️ Erreur: {response.text[:200]}")
             return jsonify({"status": "error", "message": f"HTTP {response.status_code}"}), 500
-            
+
     except Exception as e:
         print(f"❌ ERREUR: {e}")
         import traceback
