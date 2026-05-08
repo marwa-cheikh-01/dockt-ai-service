@@ -74,6 +74,15 @@ def changer_statut_consultation(rdv_id, nouveau_statut):
             f"{_get('URL_SPRING_STATUT_CONSULTATION')}"
             f"/{rdv_id}?statutConsultation={nouveau_statut}"
         )
+
+        headers = _get('HEADERS_SPRING')
+
+        # ← AJOUTEZ CES 3 LIGNES
+        print(f"🔑 TOKEN = '{headers.get('Authorization', 'VIDE')}'")
+        print(f"🌐 URL   = '{url}'")
+        print(f"📋 HEADERS = {headers}")
+        
+    
         print(f"\n📡 [changer_statut] PUT {url}")
         response = requests.put(
             url, headers=_get('HEADERS_SPRING'), timeout=10
@@ -397,13 +406,25 @@ def consulter():
                 "duree_secondes": duree,
                 "timestamp":      time.strftime("%H:%M:%S")
             })
+ # ══════════ CAS 3 : DÉJÀ TERMINÉ ══════════
+        elif statut_actuel == 'TERMINE':
+            print(f"   ℹ️ Consultation déjà terminée pour {prenom} {nom}")
+            return jsonify({
+                "status":     "deja_termine",
+                "action":     "deja_termine",
+                "message":    "Votre consultation est déjà terminée. Bonne journée !",
+                "patient_id": patient_id,
+                "nom":        nom,
+                "prenom":     prenom,
+                "rdv_id":     rdv_id
+            }), 200
 
-        # ══════════ CAS 3 : STATUT INATTENDU ══════════
+        # ══════════ CAS 4 : STATUT INATTENDU ══════════
         else:
             print(f"   ⚠️ Statut inattendu : {statut_actuel}")
             return jsonify({
-                "status":     "patient_non_reconnu",
-                "message":    "Patient non reconnu.",
+                "status":     "erreur_statut",
+                "message":    f"Statut inattendu ({statut_actuel}). Contactez la secrétaire.",
                 "patient_id": patient_id,
                 "nom":        nom,
                 "prenom":     prenom
